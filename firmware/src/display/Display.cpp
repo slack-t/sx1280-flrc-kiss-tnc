@@ -13,7 +13,7 @@ bool Display::begin() {
     // Draw boot screen directly to LCD so it appears instantly before the double buffer is active
     _lcd.drawFastHLine(0, 12, OLED_WIDTH, TFT_WHITE);
     _lcd.setCursor(2, 2);
-    _lcd.print("SX1280 TNC BOOTING...");
+    _lcd.print("SX1280 FLRC TNC BOOTING...");
     _lcd.setCursor(2, 20);
     _lcd.print("Initializing OLED: OK");
     _lcd.setCursor(2, 32);
@@ -81,7 +81,7 @@ void Display::update(const Stats& s) {
     }
 
     _sprite.setCursor(2, 2);
-    _sprite.print("SX1280 TNC");
+    _sprite.print("SX1280 FLRC TNC");
 
     // Print State in Header (right-aligned)
     const char* stateStr = "IDLE";

@@ -93,8 +93,18 @@ static void radioRxTask(void*) {
                 ra.seq = seq;
             }
 
-            const uint16_t frag_data_len = pkt.len - 1;
-            memcpy(ra.buf + idx * FRAMING_FRAG_DATA, pkt.data + 1, frag_data_len);
+            // Last fragment uses a 2-byte header (byte 1 = actual data length, rest is
+            // padding). Non-last fragments use the standard 1-byte header.
+            uint16_t       frag_data_len;
+            const uint8_t* frag_src;
+            if (is_last) {
+                frag_data_len = pkt.data[1];
+                frag_src      = pkt.data + 2;
+            } else {
+                frag_data_len = pkt.len - 1;
+                frag_src      = pkt.data + 1;
+            }
+            memcpy(ra.buf + idx * FRAMING_FRAG_DATA, frag_src, frag_data_len);
             ra.frag_len[idx]   = frag_data_len;
             ra.received_mask  |= static_cast<uint8_t>(1u << idx);
             ra.frag_count++;
@@ -171,9 +181,20 @@ static void radioTxTask(void*) {
                 if (is_last) header |= FRAMING_FLAG_LAST;
             }
 
-            pkt.data[0] = header;
-            memcpy(pkt.data + 1, frame.data + offset, chunk);
-            pkt.len = static_cast<uint8_t>(chunk + 1);
+            if (is_last && needs_split) {
+                // Last fragment: 2-byte header (byte 1 = actual data length) padded to
+                // PACKET_MAX_LEN. SX1280 FLRC at 325 kbps drops short packets; padding
+                // ensures the receiver always sees a full-size 127-byte radio frame.
+                pkt.data[0] = header;
+                pkt.data[1] = static_cast<uint8_t>(chunk);
+                memcpy(pkt.data + 2, frame.data + offset, chunk);
+                memset(pkt.data + 2 + chunk, 0, PACKET_MAX_LEN - 2 - chunk);
+                pkt.len = PACKET_MAX_LEN;
+            } else {
+                pkt.data[0] = header;
+                memcpy(pkt.data + 1, frame.data + offset, chunk);
+                pkt.len = static_cast<uint8_t>(chunk + 1);
+            }
 
             // Inter-fragment gap: gives the remote receiver ample time to process
             // the previous fragment, write it, and return to RX mode.
@@ -290,7 +311,7 @@ void setup() {
         auto& sm = StatsManager::instance();
         sm.lock();
         sm.get().freqMHz     = RADIO_FREQ_MHZ;
-        sm.get().bitrateKbps = 650;   // matches RADIO_BITRATE_PRESET default
+        sm.get().bitrateKbps = (uint32_t)RADIO_BITRATE_KBPS;
         sm.unlock();
         Serial.println("[main] Statistics tracker ready.");
     }

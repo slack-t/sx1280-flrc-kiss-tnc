@@ -33,9 +33,9 @@ FESC  = 0xDB
 TFEND = 0xDC
 TFESC = 0xDD
 
-# IP MTU after layer-2 fragmentation/reassembly (4 × 126-byte FLRC fragments).
-# Must match firmware IP_MTU = FRAMING_MAX_FRAGS * (PACKET_MAX_LEN - 1) = 504.
-DEFAULT_MTU = 504
+# IP MTU after layer-2 fragmentation/reassembly (4 × 125-byte FLRC fragments).
+# Must match firmware IP_MTU = FRAMING_MAX_FRAGS * (PACKET_MAX_LEN - 2) = 500.
+DEFAULT_MTU = 500
 
 # Seconds to wait before retrying a lost serial connection
 RECONNECT_DELAY_S = 5

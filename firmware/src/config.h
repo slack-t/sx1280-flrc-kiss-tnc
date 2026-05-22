@@ -22,8 +22,8 @@
 #define BATTERY_ADC_PIN 1
 
 // ── FLRC radio parameters ────────────────────────────────────────────────────
-// Operating frequency: 2440 MHz (centre of 2400–2483.5 MHz ISM band)
-#define RADIO_FREQ_MHZ          2440.0f
+// Operating frequency: 2480 MHz (above WiFi channel 13 in EU band plans)
+#define RADIO_FREQ_MHZ          2480.0f
 
 // TX power (conducted, dBm).
 // ETSI EN 300 328: max EIRP = 20 dBm (100 mW).

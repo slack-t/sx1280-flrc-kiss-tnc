@@ -18,14 +18,16 @@ struct Packet {
 //   [3:2]  IDX   — fragment index 0–3
 //   [1]    LAST  — set on the final fragment; receiver derives total_frags = IDX + 1
 //   [0]    SPLIT — 1 = fragmented; 0 = single-packet (no reassembly needed)
-static constexpr uint8_t  FRAMING_HDR_LEN    = 1;
+static constexpr uint8_t  FRAMING_HDR_LEN    = 1;   // non-last fragment header size
+static constexpr uint8_t  FRAMING_LAST_HDR   = 2;   // last fragment: byte 0 = flags, byte 1 = data length
 static constexpr uint8_t  FRAMING_FLAG_SPLIT = 0x01;
 static constexpr uint8_t  FRAMING_FLAG_LAST  = 0x02;
 static constexpr uint8_t  FRAMING_SEQ_UNSET  = 0xFF;
 static constexpr uint8_t  FRAMING_MAX_FRAGS  = 4;
-static constexpr uint8_t  FRAMING_FRAG_DATA  = PACKET_MAX_LEN - FRAMING_HDR_LEN;  // 126
+// Data bytes per fragment. Sized so the last fragment (2-byte header + data) fits in PACKET_MAX_LEN.
+static constexpr uint8_t  FRAMING_FRAG_DATA  = PACKET_MAX_LEN - FRAMING_LAST_HDR; // 125
 static constexpr uint16_t IP_MTU             =
-    static_cast<uint16_t>(FRAMING_MAX_FRAGS) * FRAMING_FRAG_DATA;                 // 504
+    static_cast<uint16_t>(FRAMING_MAX_FRAGS) * FRAMING_FRAG_DATA;                 // 500
 
 // ── IP-layer frame (passed through FreeRTOS queues and KISS codec) ────────────
 struct IpFrame {

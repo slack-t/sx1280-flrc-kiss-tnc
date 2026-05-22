@@ -125,8 +125,8 @@ int16_t Radio::readPacket(Packet& pkt) {
     pkt.rssi = _lastRssi;
     pkt.snr  = _lastSnr;
 
-    // RX-to-RX: skip setPreambleLength since packet params haven't changed.
-    _startReceiveNoLock(false);
+    // RX-to-RX: force full reset to prevent pay load lockout states
+    _startReceiveNoLock(true);
     xSemaphoreGive(_spiMutex);
     return state;
 }
