@@ -1,0 +1,53 @@
+#pragma once
+#include <RadioLib.h>
+#include "../config.h"
+#include "../kiss/Kiss.h"
+
+class Radio {
+public:
+    // Initialise SX1280 with FLRC parameters from config.h.
+    // Returns RADIOLIB_ERR_NONE (0) on success, or a RadioLib error code on failure.
+    int16_t begin();
+
+    // Start continuous receive mode. DIO1 ISR will signal the rxSemaphore.
+    void startReceive();
+
+    // Transmit a packet. Blocks until TX complete, then returns to RX.
+    // Returns RADIOLIB_ERR_NONE on success.
+    int16_t transmit(const Packet& pkt);
+
+    // Read the last received packet from the SX1280 FIFO.
+    // Call only after the rxSemaphore has been signalled.
+    // Returns RADIOLIB_ERR_NONE on success.
+    int16_t readPacket(Packet& pkt);
+
+    // Perform a preamble-detect scan; returns true if another transmitter is
+    // active on the channel (used for Listen-Before-Talk CSMA).
+    bool isChannelBusy();
+
+    // Last received signal strength (dBm)
+    int8_t lastRssi() const { return _lastRssi; }
+
+    // Last received SNR (dB)
+    float  lastSnr()  const { return _lastSnr; }
+
+    // FreeRTOS semaphore given from the DIO1 ISR — radio task waits on this
+    SemaphoreHandle_t rxSemaphore = nullptr;
+
+    // Set true while a blocking transmit() is in progress so the ISR does not
+    // spuriously signal rxSemaphore on the TX-done DIO1 pulse.
+    volatile bool _txActive = false;
+
+private:
+    SX1280 _radio = new Module(RADIO_NSS, RADIO_DIO1, RADIO_RST, RADIO_BUSY);
+
+    SemaphoreHandle_t _spiMutex = nullptr;
+
+    int8_t _lastRssi = 0;
+    float  _lastSnr  = 0.0f;
+
+    // SPI call without taking _spiMutex — use only when the mutex is already held.
+    void _startReceiveNoLock();
+
+    static void IRAM_ATTR _dio1Isr();
+};

@@ -1,0 +1,15 @@
+[Unit]
+Description=KISS TNC ↔ tun0 bridge (SX1280 FLRC TNC)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/kiss-tun/kiss_tun.py --port /dev/ttyACM0 --addr 10.0.0.1/30
+Restart=on-failure
+RestartSec=5
+# Requires root for TUN device creation
+User=root
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,10 @@
+# PlatformIO build output
+firmware/.pio/
+
+# Python
+__pycache__/
+*.pyc
+pi-daemon/__pycache__/
+
+# Submodule — tracked separately
+misc/tncattach/

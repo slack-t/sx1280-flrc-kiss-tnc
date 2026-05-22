@@ -1,0 +1,80 @@
+#pragma once
+
+// ── SX1280 SPI pins (Lilygo T3S3 SX1280) ─────────────────────────────────────
+// Verify against your specific board revision before flashing.
+#define RADIO_SCK       5
+#define RADIO_MISO      3
+#define RADIO_MOSI      6
+#define RADIO_NSS       7
+#define RADIO_RST       8
+#define RADIO_BUSY      36
+#define RADIO_DIO1      9
+
+// ── Display pins (SSD1306, 128x64 I2C) ──────────────────────────────────────
+#define OLED_SDA        18
+#define OLED_SCL        17
+#define OLED_ADDR       0x3C
+#define OLED_WIDTH      128
+#define OLED_HEIGHT     64
+
+
+// ── Battery ADC ──────────────────────────────────────────────────────────────
+#define BATTERY_ADC_PIN 1
+
+// ── FLRC radio parameters ────────────────────────────────────────────────────
+// Operating frequency: 2440 MHz (centre of 2400–2483.5 MHz ISM band)
+#define RADIO_FREQ_MHZ          2440.0f
+
+// TX power (conducted, dBm).
+// ETSI EN 300 328: max EIRP = 20 dBm (100 mW).
+// With a 15 dBi Yagi: conducted TX must be ≤ 5 dBm to stay compliant.
+// Increase only for bench/indoor testing with no antenna or attenuator.
+#define TX_POWER_DBM            5
+
+// Bit rate in kbps — RadioLib 6.x beginFLRC() accepts the numeric value directly.
+//   Valid options: 260, 325, 520, 650, 1040, 1300
+#define RADIO_BITRATE_KBPS      650.0f
+
+// Coding rate denominator passed to beginFLRC():
+//   3 = CR 3/4  (recommended — error correction with moderate overhead)
+//   2 = CR 1/2  (more correction, lower effective throughput)
+//   4 = CR 1/0  (uncoded, maximum throughput)
+#define RADIO_CODING_RATE       3
+
+// BT product (Gaussian pulse shaping) passed to beginFLRC().
+//   RADIOLIB_SHAPING_1_0 = BT 1.0 (cleaner spectral shape)
+//   RADIOLIB_SHAPING_0_5 = BT 0.5 (tighter spectrum)
+#define RADIO_BT                RADIOLIB_SHAPING_1_0
+
+// 4-byte sync word as a byte-array initialiser — passed to setSyncWord().
+// Pick a value unique to this network to avoid collisions with other SX1280 devices.
+#define RADIO_SYNC_WORD_BYTES   { 0xC3, 0xC3, 0xC3, 0xC3 }
+#define RADIO_SYNC_WORD_LEN     4
+
+// Preamble length in bits (must be 4, 8, 12, 16, 20, 24, 28, or 32)
+#define RADIO_PREAMBLE_BITS     32
+
+// ── Packet / buffer limits ───────────────────────────────────────────────────
+// SX1280 FLRC maximum payload = 127 bytes.
+// The tun0 MTU on the Pi side must match this value.
+#define PACKET_MAX_LEN          127
+
+// ── FreeRTOS queue depths ────────────────────────────────────────────────────
+#define TX_QUEUE_DEPTH          8
+#define RX_QUEUE_DEPTH          8
+
+// ── Task stack sizes (bytes) ─────────────────────────────────────────────────
+#define STACK_RADIO_RX          4096
+#define STACK_RADIO_TX          4096
+#define STACK_SERIAL_RX         4096
+#define STACK_SERIAL_TX         4096
+#define STACK_DISPLAY           8192
+
+// ── Task priorities ──────────────────────────────────────────────────────────
+#define PRIO_RADIO              4
+#define PRIO_SERIAL             3
+#define PRIO_DISPLAY            1
+
+// ── Display refresh interval (ms) ────────────────────────────────────────────
+#define DISPLAY_REFRESH_MS      500
+
