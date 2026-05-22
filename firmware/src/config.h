@@ -63,6 +63,11 @@
 #define TX_QUEUE_DEPTH          8
 #define RX_QUEUE_DEPTH          8
 
+// ── Timing and Queue Buffering Parameters ────────────────────────────────────
+#define RADIO_INTER_FRAG_DELAY_US    3000  // 3 ms gap between consecutive fragments
+#define RX_QUEUE_TIMEOUT_MS          50    // Prevent radio RX deadlock if host is blocked
+
+
 // ── Task stack sizes (bytes) ─────────────────────────────────────────────────
 #define STACK_RADIO_RX          4096
 #define STACK_RADIO_TX          4096

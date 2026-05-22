@@ -59,7 +59,13 @@ static void radioRxTask(void*) {
             sm.get().radioState = RadioState::RX;
             sm.unlock();
 
-            xQueueSend(rxQueue, &frame, 0);
+            if (xQueueSend(rxQueue, &frame, pdMS_TO_TICKS(RX_QUEUE_TIMEOUT_MS)) != pdPASS) {
+                Serial.printf("[rx] ERROR: rxQueue full, dropping single frame! len=%d\n", frame.len);
+                auto& sm = StatsManager::instance();
+                sm.lock();
+                sm.get().errorCount++;
+                sm.unlock();
+            }
 
         } else {
             // Fragmented frame — run reassembler.
@@ -70,14 +76,14 @@ static void radioRxTask(void*) {
             // Discard stale partial reassembly after 500 ms silence.
             if (ra.seq != FRAMING_SEQ_UNSET &&
                 (millis() - ra.last_tick_ms > 500)) {
-                Serial.printf("[radio_rx] Stale partial reassembly discarded (seq=%d, mask=0x%02X)\n", ra.seq, ra.received_mask);
+                Serial.printf("[rx] stale seq=%d mask=0x%02X discarded\n", ra.seq, ra.received_mask);
                 ra.reset();
             }
 
             // New sequence number: discard previous partial and start fresh.
             if (ra.seq != seq) {
                 if (ra.seq != FRAMING_SEQ_UNSET) {
-                    Serial.printf("[radio_rx] New seq %d received; abandoning old seq %d\n", seq, ra.seq);
+                    Serial.printf("[rx] seq %d abandoned for new seq %d\n", ra.seq, seq);
                 }
                 ra.reset();
                 ra.seq = seq;
@@ -91,9 +97,6 @@ static void radioRxTask(void*) {
             ra.last_tick_ms    = millis();
             if (is_last) ra.total_frags = idx + 1;
 
-            Serial.printf("[radio_rx] Received frag: seq=%d, idx=%d, is_last=%s, len=%d\n", 
-                          seq, idx, is_last ? "yes" : "no", frag_data_len);
-
             if (ra.isComplete()) {
                 IpFrame frame;
                 frame.len = 0;
@@ -103,7 +106,7 @@ static void radioRxTask(void*) {
                            ra.frag_len[i]);
                     frame.len += ra.frag_len[i];
                 }
-                
+
                 // Adopt final fragment's metrics directly (skipped on intermediate frags anyway)
                 frame.rssi = pkt.rssi;
                 frame.snr  = pkt.snr;
@@ -117,8 +120,14 @@ static void radioRxTask(void*) {
                 sm.get().radioState = RadioState::RX;
                 sm.unlock();
 
-                Serial.printf("[radio_rx] Frame fully reassembled! len=%d, seq=%d, RSSI=%d\n", frame.len, ra.seq, frame.rssi);
-                xQueueSend(rxQueue, &frame, 0);
+                Serial.printf("[rx] reassembled seq=%d len=%d rssi=%d\n", ra.seq, frame.len, frame.rssi);
+                if (xQueueSend(rxQueue, &frame, pdMS_TO_TICKS(RX_QUEUE_TIMEOUT_MS)) != pdPASS) {
+                    Serial.printf("[rx] ERROR: rxQueue full, dropping reassembled frame! len=%d\n", frame.len);
+                    auto& sm = StatsManager::instance();
+                    sm.lock();
+                    sm.get().errorCount++;
+                    sm.unlock();
+                }
                 ra.reset();
             }
         }
@@ -166,12 +175,7 @@ static void radioTxTask(void*) {
             // the previous fragment, write it, and return to RX mode.
             // Only apply a delay between fragments (when idx > 0).
             if (idx > 0) {
-                // Enforce minimum of 2 ticks (20ms) on 100Hz systems to guard against tick truncation.
-                TickType_t delay_ticks = pdMS_TO_TICKS(15);
-                if (delay_ticks <= 1) {
-                    delay_ticks = 2; 
-                }
-                vTaskDelay(delay_ticks);
+                delayMicroseconds(RADIO_INTER_FRAG_DELAY_US);
             }
 
             auto& sm = StatsManager::instance();
@@ -179,18 +183,16 @@ static void radioTxTask(void*) {
             sm.get().radioState = RadioState::TX;
             sm.unlock();
 
-            Serial.printf("[radio_tx] Transmitting frag %d/%d (seq=%d, len=%d)\n", idx + 1, total_frags, seq, pkt.len);
             int16_t err = radio.transmit(pkt);
 
             sm.lock();
             if (err == RADIOLIB_ERR_NONE) {
-                Serial.printf("[radio_tx] Transmit OK (frag %d/%d)\n", idx + 1, total_frags);
                 if (is_last) {
                     sm.get().txCount++;
                     sm.get().txBytes += frame.len;
                 }
             } else {
-                Serial.printf("[radio_tx] Transmit FAILED (frag %d/%d, err=%d)\n", idx + 1, total_frags, err);
+                Serial.printf("[tx] frag %d/%d err=%d\n", idx + 1, total_frags, err);
                 sm.get().errorCount++;
             }
             sm.get().radioState = RadioState::IDLE;

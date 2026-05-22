@@ -6,7 +6,9 @@ static Radio* _radioInstance = nullptr;
 int16_t Radio::begin() {
     _radioInstance = this;
 
-    rxSemaphore = xSemaphoreCreateBinary();
+    // Counting semaphore: multiple DIO1 edges (fragments arriving while radioRxTask
+    // is still processing the previous one) must not be silently discarded.
+    rxSemaphore = xSemaphoreCreateCounting(16, 0);
     _spiMutex   = xSemaphoreCreateMutex();
 
     SPI.begin(RADIO_SCK, RADIO_MISO, RADIO_MOSI, RADIO_NSS);
