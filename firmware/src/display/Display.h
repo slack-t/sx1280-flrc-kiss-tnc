@@ -31,7 +31,7 @@ public:
             cfg.panel_height     = OLED_HEIGHT;
             cfg.offset_x         = 0;
             cfg.offset_y         = 0;
-            cfg.offset_rotation  = 0;
+            cfg.offset_rotation  = 2;
             cfg.readable         = false;
             cfg.invert           = false;
             _panel.config(cfg);

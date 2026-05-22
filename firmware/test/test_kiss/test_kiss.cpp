@@ -182,10 +182,10 @@ void test_back_to_back_single_fend() {
     TEST_ASSERT_EQUAL_MEMORY(b.data, results[1].data, b.len);
 }
 
-// ── T1.9: large frame (400 bytes) round-trips through KISS encode/decode ──────
+// ── T1.9: large frame (IP_MTU bytes) round-trips through KISS encode/decode ──
 void test_large_frame_roundtrip() {
     IpFrame original;
-    original.len = 400;
+    original.len = IP_MTU;
     for (uint16_t i = 0; i < original.len; i++) {
         original.data[i] = static_cast<uint8_t>(i & 0xFF);
     }

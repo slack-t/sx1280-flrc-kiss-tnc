@@ -1,0 +1,10 @@
+[package]
+name = "kiss-tun-rs"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.4", features = ["derive"] }
+serialport = "4.9.0"
+tun-rs = "2.8.3"
+anyhow = "1.0"

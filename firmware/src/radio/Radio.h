@@ -47,7 +47,9 @@ private:
     float  _lastSnr  = 0.0f;
 
     // SPI call without taking _spiMutex — use only when the mutex is already held.
-    void _startReceiveNoLock();
+    // forceReset=true (after TX or error): clears IRQ state fully.
+    // forceReset=false (RX-to-RX): skips redundant re-init, faster turnaround.
+    void _startReceiveNoLock(bool forceReset = false);
 
     static void IRAM_ATTR _dio1Isr();
 };

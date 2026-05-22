@@ -45,13 +45,18 @@ int16_t Radio::begin() {
     return RADIOLIB_ERR_NONE;
 }
 
-void Radio::_startReceiveNoLock() {
+void Radio::_startReceiveNoLock(bool forceReset) {
+    if (forceReset) {
+        // After TX or error: SX1280 packet params may have been altered.
+        // Reset preamble length before re-entering RX.
+        _radio.setPreambleLength(RADIO_PREAMBLE_BITS);
+    }
     _radio.startReceive();
 }
 
 void Radio::startReceive() {
     xSemaphoreTake(_spiMutex, portMAX_DELAY);
-    _startReceiveNoLock();
+    _startReceiveNoLock(true);
     xSemaphoreGive(_spiMutex);
 }
 
@@ -63,7 +68,7 @@ int16_t Radio::transmit(const Packet& pkt) {
     _txActive = false;
 
     // Always return to RX — even on TX failure the node must not stay deaf.
-    _startReceiveNoLock();
+    _startReceiveNoLock(true);
 
     xSemaphoreGive(_spiMutex);
     return state;
@@ -72,21 +77,19 @@ int16_t Radio::transmit(const Packet& pkt) {
 int16_t Radio::readPacket(Packet& pkt) {
     xSemaphoreTake(_spiMutex, portMAX_DELAY);
 
-    // Verify that this is a genuine RX_DONE event on the SX1280 hardware.
-    // This prevents spurious interrupts (like a late/delayed TX_DONE edge)
-    // from triggering false reads, which leads to packet loops or duplicate (DUP) pings.
-    uint16_t irq = _radio.getIrqStatus();
-    if (!(irq & RADIOLIB_SX128X_IRQ_RX_DONE)) {
-        // Spurious interrupt (e.g. delayed TX_DONE edge) — return to RX without reading.
-        // _startReceiveNoLock() resets mode, which clears the IRQ register.
-        _startReceiveNoLock();
-        xSemaphoreGive(_spiMutex);
-        return RADIOLIB_ERR_SPI_CMD_INVALID;
-    }
-
     size_t len = _radio.getPacketLength();
-    if (len == 0 || len > PACKET_MAX_LEN) {
-        _startReceiveNoLock();
+    if (len == 0) {
+        // Pre-RX_DONE sub-event (preamble/sync word detected, or CRC_ERROR with no
+        // buffered payload). Do NOT call startReceive — that would abort an ongoing
+        // reception and create a cascade of spurious DIO1 pulses. The radio is
+        // already in RX mode; just release the mutex and go back to sleep.
+        xSemaphoreGive(_spiMutex);
+        return RADIOLIB_ERR_PACKET_TOO_LONG;
+    }
+    if (len > PACKET_MAX_LEN) {
+        // Oversized packet: it is fully buffered but we can't read it.
+        // Restart RX to flush the FIFO.
+        _startReceiveNoLock(true);
         xSemaphoreGive(_spiMutex);
         return RADIOLIB_ERR_PACKET_TOO_LONG;
     }
@@ -94,13 +97,27 @@ int16_t Radio::readPacket(Packet& pkt) {
     int16_t state = _radio.readData(pkt.data, len);
     pkt.len = (state == RADIOLIB_ERR_NONE) ? static_cast<uint8_t>(len) : 0;
 
-    _lastRssi = static_cast<int8_t>(_radio.getRSSI());
-    _lastSnr  = _radio.getSNR();
+    // Skip RSSI/SNR SPI reads for intermediate fragments — saves ~100µs of
+    // turnaround time between consecutive fragments of the same IP frame.
+    bool shouldQueryRssi = true;
+    if (state == RADIOLIB_ERR_NONE && pkt.len > 0) {
+        const uint8_t header   = pkt.data[0];
+        const bool    is_split = (header & FRAMING_FLAG_SPLIT) != 0;
+        const bool    is_last  = (header & FRAMING_FLAG_LAST)  != 0;
+        if (is_split && !is_last) {
+            shouldQueryRssi = false;
+        }
+    }
 
+    if (shouldQueryRssi) {
+        _lastRssi = static_cast<int8_t>(_radio.getRSSI());
+        _lastSnr  = _radio.getSNR();
+    }
     pkt.rssi = _lastRssi;
     pkt.snr  = _lastSnr;
 
-    _startReceiveNoLock();
+    // RX-to-RX: skip setPreambleLength since packet params haven't changed.
+    _startReceiveNoLock(false);
     xSemaphoreGive(_spiMutex);
     return state;
 }

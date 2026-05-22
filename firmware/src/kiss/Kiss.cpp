@@ -62,7 +62,7 @@ bool Kiss::decode(uint8_t byte, IpFrame& frame) {
             } else if (byte == KISS_FESC) {
                 _state = State::ESCAPE;
             } else {
-                if (_len < IP_MTU) {
+                if (_len < IP_MTU + 1) {
                     _buf[_len++] = byte;
                 } else {
                     _overflow = true;
@@ -77,7 +77,7 @@ bool Kiss::decode(uint8_t byte, IpFrame& frame) {
             } else if (byte == KISS_TFESC) {
                 byte = KISS_FESC;
             }
-            if (_len < IP_MTU) {
+            if (_len < IP_MTU + 1) {
                 _buf[_len++] = byte;
             } else {
                 _overflow = true;

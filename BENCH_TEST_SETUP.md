@@ -71,21 +71,19 @@ We will flash the compiled binary onto both boards.
 
 ## Step 3: Verify Hardware Boot & Screen Diagnostics
 
-Upon booting, the SSD1306 OLED display should initialize immediately, draw the interface layout, and display the current status dashboard.
+Upon booting, the ST7789 display should initialize immediately, draw the static layout grid, and display current status.
 
 1.  Keep the boards connected to their USB ports.
 2.  Verify the on-screen diagnostics:
-    *   **F (Freq)**: Should display `F:2440.0`.
-    *   **R (Rate)**: Should display `R:650K`.
-    *   **State (Header)**: Should show `IDLE` on the right of the top header bar.
-    *   **Counters (TX/RX/ER)**: All should read `0` (`TX:0`, `RX:0`, `ER:0`).
-    *   **P (Power)**: Should show `P:5dBm`.
+    *   **Freq**: Should display `2440.0 MHz`.
+    *   **Rate**: Should display `650 Kbps`.
+    *   **State**: Should show `[IDLE]` in white.
+    *   **Counters (TX/RX/Err)**: All should read `0`.
 3.  Open the serial monitor on one of the units to verify SPI and RadioLib startup:
     ```bash
     pio device monitor
     ```
-    You should see no initialization failures. If the radio fails to initialize, the firmware will halt inside `setup()`.
-
+    You should see no initialization failures. If the radio fails to initialize, the screen will freeze and the firmware will halt inside `setup()`.
 
 ---
 
@@ -128,9 +126,9 @@ Now, we will test the virtual network link.
     ```
 2.  Verify the following behaviors:
     *   ICMP echo replies should return successfully with a stable round-trip-time (RTT).
-    *   **On-Screen Counters**: The `TX` packet counter on Unit A and the `RX` packet counter on Unit B should increment in lockstep.
+    *   **On-Screen Counters**: The `TX pkts` counter on Unit A and the `RX pkts` counter on Unit B should increment in lockstep.
     *   **Signal Strength**: The display on Unit B should show the real-time **RSSI** and **SNR** of the received packets. RSSI on a bench should typically register between `-40 dBm` and `-60 dBm`, and SNR should register high positive values (e.g. `+8.0 dB` to `+13.0 dB`).
-    *   **State Indicator**: The state in the header bar on the screen should toggle dynamically between `TX`/`RX` and `IDLE` as packets flow, and the solid top header bar will blink (invert color) on every packet event.
+    *   **State Indicator**: The state on the screen should flash dynamically to `[TX]` (yellow) and `[RX]` (green) as packets flow.
 
 ---
 

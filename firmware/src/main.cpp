@@ -28,6 +28,7 @@ static void radioRxTask(void*) {
 
         int16_t err = radio.readPacket(pkt);
         if (err != RADIOLIB_ERR_NONE || pkt.len < 1) {
+            Serial.printf("[rx] spurious/err: err=%d pkt.len=%d\n", err, pkt.len);
             auto& sm = StatsManager::instance();
             sm.lock();
             sm.get().errorCount++;
@@ -43,6 +44,8 @@ static void radioRxTask(void*) {
             // Single-packet frame: strip the 1-byte framing header, deliver.
             IpFrame frame;
             frame.len  = pkt.len - 1;
+            Serial.printf("[rx] single pkt_len=%d frame_len=%d rssi=%d\n",
+                          pkt.len, frame.len, pkt.rssi);
             frame.rssi = pkt.rssi;
             frame.snr  = pkt.snr;
             memcpy(frame.data, pkt.data + 1, frame.len);
@@ -67,11 +70,15 @@ static void radioRxTask(void*) {
             // Discard stale partial reassembly after 500 ms silence.
             if (ra.seq != FRAMING_SEQ_UNSET &&
                 (millis() - ra.last_tick_ms > 500)) {
+                Serial.printf("[radio_rx] Stale partial reassembly discarded (seq=%d, mask=0x%02X)\n", ra.seq, ra.received_mask);
                 ra.reset();
             }
 
             // New sequence number: discard previous partial and start fresh.
             if (ra.seq != seq) {
+                if (ra.seq != FRAMING_SEQ_UNSET) {
+                    Serial.printf("[radio_rx] New seq %d received; abandoning old seq %d\n", seq, ra.seq);
+                }
                 ra.reset();
                 ra.seq = seq;
             }
@@ -80,11 +87,12 @@ static void radioRxTask(void*) {
             memcpy(ra.buf + idx * FRAMING_FRAG_DATA, pkt.data + 1, frag_data_len);
             ra.frag_len[idx]   = frag_data_len;
             ra.received_mask  |= static_cast<uint8_t>(1u << idx);
-            ra.rssi_acc       += pkt.rssi;
-            ra.snr_acc        += pkt.snr;
             ra.frag_count++;
             ra.last_tick_ms    = millis();
             if (is_last) ra.total_frags = idx + 1;
+
+            Serial.printf("[radio_rx] Received frag: seq=%d, idx=%d, is_last=%s, len=%d\n", 
+                          seq, idx, is_last ? "yes" : "no", frag_data_len);
 
             if (ra.isComplete()) {
                 IpFrame frame;
@@ -95,8 +103,10 @@ static void radioRxTask(void*) {
                            ra.frag_len[i]);
                     frame.len += ra.frag_len[i];
                 }
-                frame.rssi = static_cast<int8_t>(ra.rssi_acc / ra.frag_count);
-                frame.snr  = ra.snr_acc / ra.frag_count;
+                
+                // Adopt final fragment's metrics directly (skipped on intermediate frags anyway)
+                frame.rssi = pkt.rssi;
+                frame.snr  = pkt.snr;
 
                 auto& sm = StatsManager::instance();
                 sm.lock();
@@ -107,6 +117,7 @@ static void radioRxTask(void*) {
                 sm.get().radioState = RadioState::RX;
                 sm.unlock();
 
+                Serial.printf("[radio_rx] Frame fully reassembled! len=%d, seq=%d, RSSI=%d\n", frame.len, ra.seq, frame.rssi);
                 xQueueSend(rxQueue, &frame, 0);
                 ra.reset();
             }
@@ -119,14 +130,20 @@ static void radioRxTask(void*) {
 static void radioTxTask(void*) {
     IpFrame frame;
     Packet  pkt;
+    static uint8_t seq = 0;
 
     for (;;) {
         xQueueReceive(txQueue, &frame, portMAX_DELAY);
 
-        const uint8_t seq         = esp_random() & 0x0F;
+        seq = (seq + 1) & 0x0F;
         const bool    needs_split = (frame.len > FRAMING_FRAG_DATA);
+        const uint8_t total_frags = needs_split
+            ? static_cast<uint8_t>((frame.len + FRAMING_FRAG_DATA - 1) / FRAMING_FRAG_DATA)
+            : 1;
         uint16_t      offset      = 0;
         uint8_t       idx         = 0;
+
+        Serial.printf("[radio_tx] Sending frame: len=%d, seq=%d, frags=%d\n", frame.len, seq, total_frags);
 
         while (offset < frame.len) {
             const uint16_t chunk   = (frame.len - offset < FRAMING_FRAG_DATA)
@@ -145,23 +162,35 @@ static void radioTxTask(void*) {
             memcpy(pkt.data + 1, frame.data + offset, chunk);
             pkt.len = static_cast<uint8_t>(chunk + 1);
 
-            // Inter-frame gap: gives the remote node time to return to RX mode.
-            vTaskDelay(pdMS_TO_TICKS(2));
+            // Inter-fragment gap: gives the remote receiver ample time to process
+            // the previous fragment, write it, and return to RX mode.
+            // Only apply a delay between fragments (when idx > 0).
+            if (idx > 0) {
+                // Enforce minimum of 2 ticks (20ms) on 100Hz systems to guard against tick truncation.
+                TickType_t delay_ticks = pdMS_TO_TICKS(15);
+                if (delay_ticks <= 1) {
+                    delay_ticks = 2; 
+                }
+                vTaskDelay(delay_ticks);
+            }
 
             auto& sm = StatsManager::instance();
             sm.lock();
             sm.get().radioState = RadioState::TX;
             sm.unlock();
 
+            Serial.printf("[radio_tx] Transmitting frag %d/%d (seq=%d, len=%d)\n", idx + 1, total_frags, seq, pkt.len);
             int16_t err = radio.transmit(pkt);
 
             sm.lock();
             if (err == RADIOLIB_ERR_NONE) {
+                Serial.printf("[radio_tx] Transmit OK (frag %d/%d)\n", idx + 1, total_frags);
                 if (is_last) {
                     sm.get().txCount++;
                     sm.get().txBytes += frame.len;
                 }
             } else {
+                Serial.printf("[radio_tx] Transmit FAILED (frag %d/%d, err=%d)\n", idx + 1, total_frags, err);
                 sm.get().errorCount++;
             }
             sm.get().radioState = RadioState::IDLE;
@@ -176,17 +205,35 @@ static void radioTxTask(void*) {
 // ── Task: Serial RX ───────────────────────────────────────────────────────────
 // Reads KISS bytes from USB CDC, decodes frames, pushes to txQueue.
 static void serialRxTask(void*) {
-    Kiss    decoder;
-    IpFrame frame;
+    Kiss     decoder;
+    IpFrame  frame;
+    uint32_t last_rx_ms = 0;
+
     for (;;) {
-        if (Serial.available()) {
-            uint8_t b = Serial.read();
-            if (decoder.decode(b, frame)) {
-                xQueueSend(txQueue, &frame, pdMS_TO_TICKS(10));
+        int avail = Serial.available();
+        if (avail > 0) {
+            last_rx_ms = millis();
+            for (int i = 0; i < avail; i++) {
+                int c = Serial.read();
+                if (c < 0) break;
+                if (decoder.decode(static_cast<uint8_t>(c), frame)) {
+                    // Block indefinitely on queue to apply backpressure to USB CDC
+                    xQueueSend(txQueue, &frame, portMAX_DELAY);
+                }
             }
         } else {
-            // Block for 1 tick so lower-priority tasks (displayTask) get CPU time.
-            vTaskDelay(pdMS_TO_TICKS(1));
+            // No bytes available right now.
+            if (millis() - last_rx_ms < 20) {
+                // Microsecond poll to prevent adding FreeRTOS tick sleep overhead in active stream
+                delayMicroseconds(100);
+            } else {
+                // Sleep for at least 1 tick when completely idle so displayTask can run
+                TickType_t delay_ticks = pdMS_TO_TICKS(1);
+                if (delay_ticks == 0) {
+                    delay_ticks = 1;
+                }
+                vTaskDelay(delay_ticks);
+            }
         }
     }
 }

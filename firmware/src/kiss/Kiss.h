@@ -32,7 +32,7 @@ private:
     enum class State : uint8_t { IDLE, IN_FRAME, ESCAPE };
 
     State    _state    = State::IDLE;
-    uint8_t  _buf[IP_MTU];
+    uint8_t  _buf[IP_MTU + 1];
     uint16_t _len      = 0;
     bool     _overflow = false;
 };
