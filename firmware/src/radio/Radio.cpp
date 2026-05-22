@@ -72,9 +72,8 @@ int16_t Radio::transmit(const Packet& pkt, bool isLastFragment) {
     // and pulled DIO1 low, so that the ISR completely ignores any late TX_DONE edges.
     if (isLastFragment || state != RADIOLIB_ERR_NONE) {
         _startReceiveNoLock(true);
+        _txActive = false;
     }
-
-    _txActive = false;
 
     xSemaphoreGive(_spiMutex);
     return state;
