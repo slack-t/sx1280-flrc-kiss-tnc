@@ -48,7 +48,7 @@
 
 // 4-byte sync word as a byte-array initialiser — passed to setSyncWord().
 // Pick a value unique to this network to avoid collisions with other SX1280 devices.
-#define RADIO_SYNC_WORD_BYTES   { 0xC3, 0xC3, 0xC3, 0xC3 }
+#define RADIO_SYNC_WORD_BYTES   { 0x7E, 0xC5, 0xA2, 0x3D }
 #define RADIO_SYNC_WORD_LEN     4
 
 // Preamble length in bits (must be 4, 8, 12, 16, 20, 24, 28, or 32)
@@ -64,7 +64,7 @@
 #define RX_QUEUE_DEPTH          8
 
 // ── Timing and Queue Buffering Parameters ────────────────────────────────────
-#define RADIO_INTER_FRAG_DELAY_US    3000  // 3 ms gap between consecutive fragments
+#define RADIO_INTER_FRAG_DELAY_US    5000  // 5 ms gap between consecutive fragments
 #define RX_QUEUE_TIMEOUT_MS          50    // Prevent radio RX deadlock if host is blocked
 
 

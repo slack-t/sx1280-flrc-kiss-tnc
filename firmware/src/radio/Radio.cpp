@@ -67,12 +67,14 @@ int16_t Radio::transmit(const Packet& pkt, bool isLastFragment) {
 
     _txActive = true;
     int16_t state = _radio.transmit(const_cast<uint8_t*>(pkt.data), pkt.len);
-    _txActive = false;
 
-    // Only return to RX on the final fragment (or if TX failed, as a safety fallback)
+    // Keep _txActive set to true until we've returned the radio to RX mode
+    // and pulled DIO1 low, so that the ISR completely ignores any late TX_DONE edges.
     if (isLastFragment || state != RADIOLIB_ERR_NONE) {
         _startReceiveNoLock(true);
     }
+
+    _txActive = false;
 
     xSemaphoreGive(_spiMutex);
     return state;
@@ -81,18 +83,22 @@ int16_t Radio::transmit(const Packet& pkt, bool isLastFragment) {
 int16_t Radio::readPacket(Packet& pkt) {
     xSemaphoreTake(_spiMutex, portMAX_DELAY);
 
-    size_t len = _radio.getPacketLength();
-    if (len == 0) {
-        // Pre-RX_DONE sub-event (preamble/sync word detected, or CRC_ERROR with no
-        // buffered payload). Do NOT call startReceive — that would abort an ongoing
-        // reception and create a cascade of spurious DIO1 pulses. The radio is
-        // already in RX mode; just release the mutex and go back to sleep.
+    // Verify that this is a genuine RX_DONE event on the SX1280 hardware.
+    // This prevents spurious interrupts (like a late/delayed TX_DONE edge)
+    // from leaving the radio deaf or triggering false reads.
+    uint16_t irq = _radio.getIrqStatus();
+    if (!(irq & RADIOLIB_SX128X_IRQ_RX_DONE)) {
+        // Force the radio back into receive mode so it doesn't stay deaf.
+        // _startReceiveNoLock(true) internally clears the chip's interrupt registers.
+        _startReceiveNoLock(true);
         xSemaphoreGive(_spiMutex);
-        return RADIOLIB_ERR_PACKET_TOO_LONG;
+        return ERR_SPURIOUS_IRQ;
     }
-    if (len > PACKET_MAX_LEN) {
-        // Oversized packet: it is fully buffered but we can't read it.
-        // Restart RX to flush the FIFO.
+
+    size_t len = _radio.getPacketLength();
+    if (len == 0 || len > PACKET_MAX_LEN) {
+        // Clear interrupts and force-reset RX mode to flush the FIFO.
+        // _startReceiveNoLock(true) internally clears the chip's interrupt registers.
         _startReceiveNoLock(true);
         xSemaphoreGive(_spiMutex);
         return RADIOLIB_ERR_PACKET_TOO_LONG;
@@ -136,8 +142,13 @@ bool Radio::isChannelBusy() {
 void IRAM_ATTR Radio::_dio1Isr() {
     // Suppress the TX-done DIO1 pulse — only signal on genuine RX events.
     if (_radioInstance && _radioInstance->rxSemaphore && !_radioInstance->_txActive) {
-        BaseType_t higher = pdFALSE;
-        xSemaphoreGiveFromISR(_radioInstance->rxSemaphore, &higher);
-        portYIELD_FROM_ISR(higher);
+        // Fast hardware check: DIO1 must be physically HIGH for a genuine RX_DONE interrupt.
+        // If the interrupt is serviced late (after TX is done and DIO1 is pulled low),
+        // digitalRead will return LOW, allowing us to safely ignore the spurious event.
+        if (digitalRead(RADIO_DIO1) == HIGH) {
+            BaseType_t higher = pdFALSE;
+            xSemaphoreGiveFromISR(_radioInstance->rxSemaphore, &higher);
+            portYIELD_FROM_ISR(higher);
+        }
     }
 }

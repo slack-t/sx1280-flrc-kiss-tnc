@@ -22,11 +22,19 @@
   - `[x]` Develop Stateful KISS Codec in Rust (`kiss.rs`)
   - `[x]` Implement Orchestration Engine (`main.rs`)
   - `[x]` Verify Rust daemon unit tests
-- `[/]` Eliminate Inter-Fragment RX Toggles to Resolve Packet Drops (Active)
-  - `[ ]` Add `isLastFragment` parameter (default `true`) to `Radio::transmit` in `Radio.h`
-  - `[ ]` Update `Radio::transmit` implementation in `Radio.cpp` to skip `_startReceiveNoLock` on intermediate fragments
-  - `[ ]` Update `radioTxTask` in `main.cpp` to pass `is_last` to `radio.transmit`
-  - `[ ]` Re-run native tests and compile firmware to verify
+- `[x]` Eliminate Inter-Fragment RX Toggles to Resolve Packet Drops
+  - `[x]` Add `isLastFragment` parameter (default `true`) to `Radio::transmit` in `Radio.h`
+  - `[x]` Update `Radio::transmit` implementation in `Radio.cpp` to skip `_startReceiveNoLock` on intermediate fragments
+  - `[x]` Update `radioTxTask` in `main.cpp` to pass `is_last` to `radio.transmit`
+  - `[x]` Re-run native tests and compile firmware to verify
+- `[x]` Implement Spurious-IRQ Prevention & Settling Pacing (Active)
+  - `[x]` Define `ERR_SPURIOUS_IRQ` (-1000) and update `Radio::readPacket` signature in `Radio.h`
+  - `[x]` Update `Radio::transmit` to hold `_txActive = true` until after RX mode is restarted
+  - `[x]` Update `Radio::_dio1Isr` to perform the `digitalRead(RADIO_DIO1) == HIGH` hardware guard
+  - `[x]` Update `Radio::readPacket` to verify `RX_DONE` IRQ flag and drop redundant clearIrqStatus calls
+  - `[x]` Update `radioRxTask` in `main.cpp` to gracefully ignore `ERR_SPURIOUS_IRQ` without counting errors
+  - `[x]` Increase `RADIO_INTER_FRAG_DELAY_US` to `5000` (5 ms) in `config.h`
 - `[ ]` Build, Upload, and Verify Link Performance
-  - `[ ]` Upload firmware to the ESP32-S3 boards
-  - `[ ]` Verify robust `ping -s 476` with 0% packet loss and low latency
+  - `[ ]` Compile firmware via `pio run` to verify clean build
+  - `[ ]` Upload firmware to both Lilygo T3S3 boards
+  - `[ ]` Run Rust daemon and verify `ping -s 476` with 0% packet loss and low latency

@@ -3,6 +3,8 @@
 #include "../config.h"
 #include "../kiss/Kiss.h"
 
+#define ERR_SPURIOUS_IRQ -1000
+
 class Radio {
 public:
     // Initialise SX1280 with FLRC parameters from config.h.

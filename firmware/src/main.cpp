@@ -27,8 +27,12 @@ static void radioRxTask(void*) {
         xSemaphoreTake(radio.rxSemaphore, portMAX_DELAY);
 
         int16_t err = radio.readPacket(pkt);
+        if (err == ERR_SPURIOUS_IRQ) {
+            // Spurious interrupt caught and handled. No action needed, do not increment error counts.
+            continue;
+        }
         if (err != RADIOLIB_ERR_NONE || pkt.len < 1) {
-            Serial.printf("[rx] spurious/err: err=%d pkt.len=%d\n", err, pkt.len);
+            Serial.printf("[rx] genuine RX err: err=%d pkt.len=%d\n", err, pkt.len);
             auto& sm = StatsManager::instance();
             sm.lock();
             sm.get().errorCount++;
