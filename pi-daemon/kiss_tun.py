@@ -33,8 +33,9 @@ FESC  = 0xDB
 TFEND = 0xDC
 TFESC = 0xDD
 
-# SX1280 FLRC max payload; tun MTU must match firmware PACKET_MAX_LEN
-DEFAULT_MTU = 127
+# IP MTU after layer-2 fragmentation/reassembly (4 × 126-byte FLRC fragments).
+# Must match firmware IP_MTU = FRAMING_MAX_FRAGS * (PACKET_MAX_LEN - 1) = 504.
+DEFAULT_MTU = 504
 
 # Seconds to wait before retrying a lost serial connection
 RECONNECT_DELAY_S = 5
@@ -186,7 +187,7 @@ def main():
     parser.add_argument("--addr",  required=True,
                         help="IP/prefix for tun interface, e.g. 10.0.0.1/30")
     parser.add_argument("--mtu",   type=int, default=DEFAULT_MTU,
-                        help=f"MTU (default: {DEFAULT_MTU}, must match firmware PACKET_MAX_LEN)")
+                        help=f"MTU (default: {DEFAULT_MTU}, must match firmware IP_MTU)")
     parser.add_argument("--name",  default="tun0",
                         help="TUN interface name (default: tun0)")
     args = parser.parse_args()

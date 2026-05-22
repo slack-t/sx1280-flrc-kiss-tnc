@@ -77,7 +77,8 @@ int16_t Radio::readPacket(Packet& pkt) {
     // from triggering false reads, which leads to packet loops or duplicate (DUP) pings.
     uint16_t irq = _radio.getIrqStatus();
     if (!(irq & RADIOLIB_SX128X_IRQ_RX_DONE)) {
-        _radio.clearIrqStatus();
+        // Spurious interrupt (e.g. delayed TX_DONE edge) — return to RX without reading.
+        // _startReceiveNoLock() resets mode, which clears the IRQ register.
         _startReceiveNoLock();
         xSemaphoreGive(_spiMutex);
         return RADIOLIB_ERR_SPI_CMD_INVALID;
