@@ -11,17 +11,17 @@
   - `[x]` Refactor `main.cpp` to implement Tick-granularity Protection
   - `[x]` Refactor `main.cpp` to add lightweight thread-safe diagnostic logging to track fragment progress
   - `[x]` Refactor `main.cpp` to implement high-speed serial RX drainage & microsecond-polling
-- `[/]` Fine-Tune Inter-Fragment Pacing & Queue Deadlock Protection (Active)
-  - `[ ]` Define `RADIO_INTER_FRAG_DELAY_US` (3000 µs) and `RX_QUEUE_TIMEOUT_MS` (50 ms) in `config.h`
-  - `[ ]` Replace `vTaskDelay` with `delayMicroseconds()` in `radioTxTask` inside `main.cpp`
-  - `[ ]` Replace blocking `xQueueSend` on `rxQueue` with bounded-blocking timeout in `radioRxTask` inside `main.cpp`
-  - `[ ]` Run `pio test -e native` to verify no regressions in KISS code
-  - `[ ]` Compile firmware via `pio run` to verify clean build
+- `[x]` Fine-Tune Inter-Fragment Pacing & Queue Deadlock Protection
+  - `[x]` Define `RADIO_INTER_FRAG_DELAY_US` (3000 µs) and `RX_QUEUE_TIMEOUT_MS` (50 ms) in `config.h`
+  - `[x]` Replace `vTaskDelay` with `delayMicroseconds()` in `radioTxTask` inside `main.cpp`
+  - `[x]` Replace blocking `xQueueSend` on `rxQueue` with bounded-blocking timeout in `radioRxTask` inside `main.cpp`
+  - `[x]` Run `pio test -e native` to verify no regressions in KISS code
+  - `[x]` Compile firmware via `pio run` to verify clean build
 - `[x]` Implement High-Performance Rust KISS-TUN Daemon
   - `[x]` Create Rust project scaffold under `pi-daemon-rust/`
   - `[x]` Develop Stateful KISS Codec in Rust (`kiss.rs`)
   - `[x]` Implement Orchestration Engine (`main.rs`)
   - `[x]` Verify Rust daemon unit tests
-- `[ ]` Build, Upload, and Verify Link Performance
+- `[/]` Build, Upload, and Verify Link Performance
   - `[ ]` Upload firmware to the ESP32-S3 boards
   - `[ ]` Verify robust `ping -s 400` with high speed and low latency
