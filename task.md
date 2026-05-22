@@ -34,7 +34,7 @@
   - `[x]` Update `Radio::readPacket` to verify `RX_DONE` IRQ flag and drop redundant clearIrqStatus calls
   - `[x]` Update `radioRxTask` in `main.cpp` to gracefully ignore `ERR_SPURIOUS_IRQ` without counting errors
   - `[x]` Increase `RADIO_INTER_FRAG_DELAY_US` to `5000` (5 ms) in `config.h`
-- `[ ]` Build, Upload, and Verify Link Performance
-  - `[ ]` Compile firmware via `pio run` to verify clean build
-  - `[ ]` Upload firmware to both Lilygo T3S3 boards
+- `[x]` Build, Upload, and Verify Link Performance
+  - `[x]` Compile firmware via `pio run` to verify clean build
+  - `[x]` Upload firmware to both Lilygo T3S3 boards
   - `[ ]` Run Rust daemon and verify `ping -s 476` with 0% packet loss and low latency

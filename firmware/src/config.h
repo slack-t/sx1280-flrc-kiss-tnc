@@ -33,13 +33,13 @@
 
 // Bit rate in kbps — RadioLib 6.x beginFLRC() accepts the numeric value directly.
 //   Valid options: 260, 325, 520, 650, 1040, 1300
-#define RADIO_BITRATE_KBPS      650.0f
+#define RADIO_BITRATE_KBPS      325.0f
 
 // Coding rate denominator passed to beginFLRC():
 //   3 = CR 3/4  (recommended — error correction with moderate overhead)
 //   2 = CR 1/2  (more correction, lower effective throughput)
 //   4 = CR 1/0  (uncoded, maximum throughput)
-#define RADIO_CODING_RATE       3
+#define RADIO_CODING_RATE       2
 
 // BT product (Gaussian pulse shaping) passed to beginFLRC().
 //   RADIOLIB_SHAPING_1_0 = BT 1.0 (cleaner spectral shape)
@@ -64,7 +64,7 @@
 #define RX_QUEUE_DEPTH          8
 
 // ── Timing and Queue Buffering Parameters ────────────────────────────────────
-#define RADIO_INTER_FRAG_DELAY_US    5000  // 5 ms gap between consecutive fragments
+#define RADIO_INTER_FRAG_DELAY_US    8000  // 8 ms gap between consecutive fragments
 #define RX_QUEUE_TIMEOUT_MS          50    // Prevent radio RX deadlock if host is blocked
 
 
