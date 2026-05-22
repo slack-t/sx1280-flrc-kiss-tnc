@@ -183,7 +183,7 @@ static void radioTxTask(void*) {
             sm.get().radioState = RadioState::TX;
             sm.unlock();
 
-            int16_t err = radio.transmit(pkt);
+            int16_t err = radio.transmit(pkt, is_last);
 
             sm.lock();
             if (err == RADIOLIB_ERR_NONE) {

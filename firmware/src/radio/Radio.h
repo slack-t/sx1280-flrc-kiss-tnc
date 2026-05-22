@@ -12,9 +12,10 @@ public:
     // Start continuous receive mode. DIO1 ISR will signal the rxSemaphore.
     void startReceive();
 
-    // Transmit a packet. Blocks until TX complete, then returns to RX.
+    // Transmit a packet. Blocks until TX complete.
+    // If isLastFragment is true, it returns to RX mode. Otherwise, it stays in standby.
     // Returns RADIOLIB_ERR_NONE on success.
-    int16_t transmit(const Packet& pkt);
+    int16_t transmit(const Packet& pkt, bool isLastFragment = true);
 
     // Read the last received packet from the SX1280 FIFO.
     // Call only after the rxSemaphore has been signalled.

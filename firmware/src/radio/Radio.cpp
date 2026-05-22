@@ -62,15 +62,17 @@ void Radio::startReceive() {
     xSemaphoreGive(_spiMutex);
 }
 
-int16_t Radio::transmit(const Packet& pkt) {
+int16_t Radio::transmit(const Packet& pkt, bool isLastFragment) {
     xSemaphoreTake(_spiMutex, portMAX_DELAY);
 
     _txActive = true;
     int16_t state = _radio.transmit(const_cast<uint8_t*>(pkt.data), pkt.len);
     _txActive = false;
 
-    // Always return to RX — even on TX failure the node must not stay deaf.
-    _startReceiveNoLock(true);
+    // Only return to RX on the final fragment (or if TX failed, as a safety fallback)
+    if (isLastFragment || state != RADIOLIB_ERR_NONE) {
+        _startReceiveNoLock(true);
+    }
 
     xSemaphoreGive(_spiMutex);
     return state;

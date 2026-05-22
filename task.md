@@ -22,6 +22,11 @@
   - `[x]` Develop Stateful KISS Codec in Rust (`kiss.rs`)
   - `[x]` Implement Orchestration Engine (`main.rs`)
   - `[x]` Verify Rust daemon unit tests
-- `[/]` Build, Upload, and Verify Link Performance
+- `[/]` Eliminate Inter-Fragment RX Toggles to Resolve Packet Drops (Active)
+  - `[ ]` Add `isLastFragment` parameter (default `true`) to `Radio::transmit` in `Radio.h`
+  - `[ ]` Update `Radio::transmit` implementation in `Radio.cpp` to skip `_startReceiveNoLock` on intermediate fragments
+  - `[ ]` Update `radioTxTask` in `main.cpp` to pass `is_last` to `radio.transmit`
+  - `[ ]` Re-run native tests and compile firmware to verify
+- `[ ]` Build, Upload, and Verify Link Performance
   - `[ ]` Upload firmware to the ESP32-S3 boards
-  - `[ ]` Verify robust `ping -s 400` with high speed and low latency
+  - `[ ]` Verify robust `ping -s 476` with 0% packet loss and low latency
