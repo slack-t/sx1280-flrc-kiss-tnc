@@ -82,8 +82,12 @@
 
 // ── LBT (Listen-Before-Talk) CSMA parameters ─────────────────────────────────
 // Channel is considered busy when instantaneous RSSI exceeds this level (dBm).
-// -85 dBm detects the remote node reliably while ignoring distant background sources.
-#define RADIO_LBT_RSSI_THRESHOLD_DBM   -85
+// Set to 0 to disable CSMA backoff entirely — appropriate for a dedicated 2-node
+// P2P link where the protocol is already naturally half-duplex and the 2.4 GHz
+// ISM band noise floor often exceeds -85 dBm, causing spurious backoff that adds
+// ~240 ms latency per packet with no collision-avoidance benefit.
+// To re-enable: set to -70 dBm (ignores WiFi background, detects remote Yagi node).
+#define RADIO_LBT_RSSI_THRESHOLD_DBM    0
 // Dwell time in RX before reading RSSI — allows AGC and RSSI circuit to settle.
 #define RADIO_LBT_SENSE_US              500
 // Maximum busy-channel retries before forcing a TX anyway (starvation guard).
