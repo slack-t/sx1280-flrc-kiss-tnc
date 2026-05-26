@@ -13,6 +13,7 @@ Requirements:
 """
 
 import argparse
+import enum
 import ipaddress
 import os
 import select
@@ -33,7 +34,6 @@ FESC  = 0xDB
 TFEND = 0xDC
 TFESC = 0xDD
 KISS_DATA_PORT = 0x00
-KISS_STATS_PORT = 0x10
 
 # IP MTU after layer-2 fragmentation/reassembly with a 4-byte radio link header.
 # Must match firmware IP_MTU = FRAMING_MAX_FRAGS * (PACKET_MAX_LEN - 4) = 492.
@@ -59,6 +59,53 @@ def kiss_encode(payload: bytes) -> bytes:
             out.append(b)
     out.append(FEND)
     return bytes(out)
+
+
+class Direction(enum.Enum):
+    TUN_TO_RADIO = "tun→radio"
+    RADIO_TO_TUN = "radio→tun"
+
+
+def describe_ipv4_packet(pkt: bytes) -> str:
+    if len(pkt) < 20:
+        return f"non-ip len={len(pkt)}"
+
+    version = pkt[0] >> 4
+    ihl = (pkt[0] & 0x0F) * 4
+    if version != 4 or ihl < 20 or len(pkt) < ihl:
+        return f"non-ip len={len(pkt)}"
+
+    total_len = int.from_bytes(pkt[2:4], "big")
+    ident = int.from_bytes(pkt[4:6], "big")
+    frag_field = int.from_bytes(pkt[6:8], "big")
+    flags = frag_field >> 13
+    frag_offset = (frag_field & 0x1FFF) * 8
+    proto = pkt[9]
+
+    proto_name = {
+        1: "ICMP",
+        6: "TCP",
+        17: "UDP",
+    }.get(proto, str(proto))
+    summary = f"ipv4 len={total_len} id=0x{ident:04x} proto={proto_name}"
+
+    if flags & 0x2:
+        summary += " DF"
+    if flags & 0x1:
+        summary += " MF"
+    if frag_offset:
+        summary += f" frag_off={frag_offset}"
+
+    if proto == 1 and len(pkt) >= ihl + 2:
+        icmp_type = pkt[ihl]
+        icmp_code = pkt[ihl + 1]
+        summary += f" icmp={icmp_type}/{icmp_code}"
+
+    return summary
+
+
+def log_packet(direction: Direction, pkt: bytes) -> None:
+    print(f"[kiss_tun] {direction.value}: {describe_ipv4_packet(pkt)}", flush=True)
 
 
 class KissDecoder:
@@ -91,8 +138,6 @@ class KissDecoder:
                         port    = self._buf[0]
                         payload = bytes(self._buf[1:])
                         if port == KISS_DATA_PORT:
-                            yield (port, payload)
-                        elif port == KISS_STATS_PORT:
                             yield (port, payload)
                         else:
                             # Non-zero port: bytes accumulated between KISS frames.
@@ -150,6 +195,7 @@ def tun_to_radio(tun, ser, mtu: int, stop_event: threading.Event):
                       flush=True)
                 continue
             print(f"[kiss_tun] tun0 → radio: sending {len(pkt)} bytes", flush=True)
+            log_packet(Direction.TUN_TO_RADIO, pkt)
             ser.write(kiss_encode(pkt))
             # Pacing: A small 5ms delay prevents the host from flooding the USB CDC
             # buffers and the TNC board's internal queue during high-throughput benchmarks.
@@ -171,17 +217,13 @@ def radio_to_tun(tun, ser, stop_event: threading.Event):
                     if port == KISS_DATA_PORT and payload:
                         try:
                             print(f"[kiss_tun] radio → tun0: injecting {len(payload)} bytes", flush=True)
+                            log_packet(Direction.RADIO_TO_TUN, payload)
                             os.write(tun.fileno(), payload)
                         except OSError as e:
                             if e.errno == errno.EINVAL:
                                 print(f"[kiss_tun] radio→tun: dropped invalid IP packet (len={len(payload)})", flush=True)
                             else:
                                 raise
-                    elif port == KISS_STATS_PORT and payload:
-                        try:
-                            print(f"[TNC stats] {payload.decode('ascii')}", flush=True)
-                        except UnicodeDecodeError:
-                            print("[TNC stats] <non-ascii payload>", flush=True)
                     elif port == -1:
                         print(f"[ESP32] {payload.decode()}", flush=True)
             else:

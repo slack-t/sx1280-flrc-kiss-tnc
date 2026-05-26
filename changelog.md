@@ -31,3 +31,15 @@
 ### Documentation
 
 - Updated the README to document the 16-bit frame sequence number, 4-byte fragment header, and MTU `492`.
+
+### Host-path debugging and cleanup
+
+- Removed the temporary KISS telemetry/control-port path again to keep the USB CDC/KISS stream data-only.
+- Added host-side IPv4 packet inspection logging in `kiss_tun.py` so injected and transmitted packets now show:
+  - IPv4 total length
+  - IP ID
+  - protocol
+  - fragmentation flags and offset
+  - ICMP type/code when applicable
+- Hardened firmware USB CDC transmit handling so KISS frames are written in a loop until fully drained.
+- Added an IPv4 completeness check before forwarding reassembled frames to the USB/KISS path, so malformed short frames are dropped in firmware instead of being injected into `tun0`.

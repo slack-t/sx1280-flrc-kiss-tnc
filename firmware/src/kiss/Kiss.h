@@ -13,7 +13,6 @@ static constexpr uint8_t KISS_TFESC = 0xDD;
 
 // KISS port/command byte for data frames on port 0
 static constexpr uint8_t KISS_DATA_FRAME = 0x00;
-static constexpr uint8_t KISS_STATS_FRAME = 0x10;
 
 class Kiss {
 public:
@@ -21,11 +20,6 @@ public:
     // outBuf must be at least (2 * IP_MTU + 4) bytes (1011 bytes worst-case).
     // Returns number of bytes written to outBuf.
     static size_t encode(const IpFrame& frame, uint8_t* outBuf, size_t outBufLen);
-    static size_t encodeRaw(uint8_t port,
-                            const uint8_t* payload,
-                            size_t payloadLen,
-                            uint8_t* outBuf,
-                            size_t outBufLen);
 
     // Feed one byte at a time into the decoder.
     // Returns true when a complete frame has been decoded into frame.

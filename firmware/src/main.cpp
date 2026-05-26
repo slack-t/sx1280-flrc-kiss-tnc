@@ -2,8 +2,6 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/queue.h>
-#include <freertos/semphr.h>
-#include <stdio.h>
 
 #include "config.h"
 #include "radio/Radio.h"
@@ -19,7 +17,6 @@ static Display display;
 static QueueHandle_t txQueue;   // IpFrame: SerialRX  → RadioTX
 static QueueHandle_t rxQueue;   // IpFrame: RadioRX   → SerialTX
 static QueueHandle_t ackQueue;  // AckFrame: RadioRX  → RadioTX
-static SemaphoreHandle_t serialWriteMutex;
 
 struct CompletedFrameCache {
     uint16_t seq         = FRAMING_SEQ_UNSET;
@@ -70,6 +67,20 @@ static void noteIdentityReset() {
     sm.unlock();
 }
 
+static bool ipv4FrameLooksComplete(const IpFrame& frame) {
+    if (frame.len < 20) {
+        return false;
+    }
+    const uint8_t version = static_cast<uint8_t>(frame.data[0] >> 4);
+    const uint8_t ihl = static_cast<uint8_t>((frame.data[0] & 0x0Fu) * 4u);
+    if (version != 4 || ihl < 20 || frame.len < ihl) {
+        return false;
+    }
+    const uint16_t total_len = static_cast<uint16_t>((static_cast<uint16_t>(frame.data[2]) << 8) |
+                                                     static_cast<uint16_t>(frame.data[3]));
+    return total_len >= ihl && total_len <= frame.len;
+}
+
 static void finalizeReassembly(Reassembler& ra, CompletedFrameCache& completed) {
     IpFrame frame;
     frame.len = 0;
@@ -80,6 +91,12 @@ static void finalizeReassembly(Reassembler& ra, CompletedFrameCache& completed) 
         frame.len += ra.frag_len[i];
     }
     frame.rssi = ra.last_rssi;
+
+    if (!ipv4FrameLooksComplete(frame)) {
+        noteRadioError();
+        ra.reset();
+        return;
+    }
 
     auto& sm = StatsManager::instance();
     sm.lock();
@@ -474,66 +491,18 @@ static void serialTxTask(void*) {
     for (;;) {
         xQueueReceive(rxQueue, &frame, portMAX_DELAY);
         size_t encLen = Kiss::encode(frame, encBuf, sizeof(encBuf));
-        xSemaphoreTake(serialWriteMutex, portMAX_DELAY);
-        size_t written = Serial.write(encBuf, encLen);
-        xSemaphoreGive(serialWriteMutex);
-        (void)written;
-    }
-}
-
-// ── Task: Serial Stats ────────────────────────────────────────────────────────
-// Emits periodic ARQ counters on a dedicated KISS control port.
-static void serialStatsTask(void*) {
-    static char statsBuf[256];
-    static uint8_t encBuf[sizeof(statsBuf) * 2 + 4];
-
-    for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(STATS_FRAME_INTERVAL_MS));
-
-        auto& sm = StatsManager::instance();
-        sm.lock();
-        Stats snapshot = sm.get();
-        sm.unlock();
-
-        int len = snprintf(
-            statsBuf, sizeof(statsBuf),
-            "stats tx=%lu rx=%lu err=%lu fs=%lu fc=%lu ff=%lu rty=%lu ato=%lu "
-            "acktx=%lu ackrx=%lu ackerr=%lu dup=%lu drop=%lu id=%lu qdrop=%lu rssi=%d",
-            snapshot.txCount,
-            snapshot.rxCount,
-            snapshot.errorCount,
-            snapshot.arqFramesStarted,
-            snapshot.arqFramesCompleted,
-            snapshot.arqFramesFailed,
-            snapshot.arqRetryCount,
-            snapshot.arqAckTimeoutCount,
-            snapshot.arqAckTxCount,
-            snapshot.arqAckRxCount,
-            snapshot.arqAckTxErrors,
-            snapshot.arqDuplicateSuppressed,
-            snapshot.arqReassemblyDrops,
-            snapshot.arqIdentityResets,
-            snapshot.arqQueueDrops,
-            snapshot.rssi
-        );
-        if (len <= 0) {
-            continue;
+        size_t offset = 0;
+        while (offset < encLen) {
+            size_t written = Serial.write(encBuf + offset, encLen - offset);
+            if (written == 0) {
+                noteRadioError();
+                break;
+            }
+            offset += written;
         }
-        if (len >= static_cast<int>(sizeof(statsBuf))) {
-            len = sizeof(statsBuf) - 1;
+        if (offset == encLen) {
+            Serial.flush();
         }
-
-        size_t encLen = Kiss::encodeRaw(
-            KISS_STATS_FRAME,
-            reinterpret_cast<const uint8_t*>(statsBuf),
-            static_cast<size_t>(len),
-            encBuf,
-            sizeof(encBuf)
-        );
-        xSemaphoreTake(serialWriteMutex, portMAX_DELAY);
-        size_t written = Serial.write(encBuf, encLen);
-        xSemaphoreGive(serialWriteMutex);
-        (void)written;
     }
 }
 
@@ -607,8 +576,7 @@ void setup() {
     txQueue = xQueueCreate(TX_QUEUE_DEPTH, sizeof(IpFrame));
     rxQueue = xQueueCreate(RX_QUEUE_DEPTH, sizeof(IpFrame));
     ackQueue = xQueueCreate(8, sizeof(AckFrame));
-    serialWriteMutex = xSemaphoreCreateMutex();
-    if (txQueue == nullptr || rxQueue == nullptr || ackQueue == nullptr || serialWriteMutex == nullptr) {
+    if (txQueue == nullptr || rxQueue == nullptr || ackQueue == nullptr) {
         Serial.println("[main] CRITICAL: Failed to create FreeRTOS queues!");
         display.showError("Queue Create Fail", -99);
         while (true) { delay(1000); }
@@ -630,9 +598,6 @@ void setup() {
 
     taskStatus = xTaskCreatePinnedToCore(serialTxTask, "serialTx", STACK_SERIAL_TX, nullptr, PRIO_SERIAL, nullptr, 0);
     Serial.printf("[main] Spawn task 'serialTx' on Core 0 -> %s\n", taskStatus == pdPASS ? "OK" : "FAILED");
-
-    taskStatus = xTaskCreatePinnedToCore(serialStatsTask, "serialStats", STACK_SERIAL_STATS, nullptr, PRIO_SERIAL_STATS, nullptr, 0);
-    Serial.printf("[main] Spawn task 'serialStats' on Core 0 -> %s\n", taskStatus == pdPASS ? "OK" : "FAILED");
 
     taskStatus = xTaskCreatePinnedToCore(displayTask,  "display",  STACK_DISPLAY,   nullptr, PRIO_DISPLAY, nullptr, 0);
     Serial.printf("[main] Spawn task 'display' on Core 0 -> %s\n", taskStatus == pdPASS ? "OK" : "FAILED");
