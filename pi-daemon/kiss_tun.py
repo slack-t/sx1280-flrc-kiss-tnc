@@ -32,6 +32,8 @@ FEND  = 0xC0
 FESC  = 0xDB
 TFEND = 0xDC
 TFESC = 0xDD
+KISS_DATA_PORT = 0x00
+KISS_STATS_PORT = 0x10
 
 # IP MTU after layer-2 fragmentation/reassembly with a 4-byte radio link header.
 # Must match firmware IP_MTU = FRAMING_MAX_FRAGS * (PACKET_MAX_LEN - 4) = 492.
@@ -88,7 +90,9 @@ class KissDecoder:
                     if not self._overflow and len(self._buf) > 1:
                         port    = self._buf[0]
                         payload = bytes(self._buf[1:])
-                        if port == 0x00:
+                        if port == KISS_DATA_PORT:
+                            yield (port, payload)
+                        elif port == KISS_STATS_PORT:
                             yield (port, payload)
                         else:
                             # Non-zero port: bytes accumulated between KISS frames.
@@ -164,7 +168,7 @@ def radio_to_tun(tun, ser, stop_event: threading.Event):
             if waiting:
                 data = ser.read(waiting)
                 for port, payload in decoder.feed(data):
-                    if port == 0x00 and payload:
+                    if port == KISS_DATA_PORT and payload:
                         try:
                             print(f"[kiss_tun] radio → tun0: injecting {len(payload)} bytes", flush=True)
                             os.write(tun.fileno(), payload)
@@ -173,6 +177,11 @@ def radio_to_tun(tun, ser, stop_event: threading.Event):
                                 print(f"[kiss_tun] radio→tun: dropped invalid IP packet (len={len(payload)})", flush=True)
                             else:
                                 raise
+                    elif port == KISS_STATS_PORT and payload:
+                        try:
+                            print(f"[TNC stats] {payload.decode('ascii')}", flush=True)
+                        except UnicodeDecodeError:
+                            print("[TNC stats] <non-ascii payload>", flush=True)
                     elif port == -1:
                         print(f"[ESP32] {payload.decode()}", flush=True)
             else:

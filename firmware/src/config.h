@@ -81,11 +81,13 @@
 #define STACK_RADIO_TX          4096
 #define STACK_SERIAL_RX         4096
 #define STACK_SERIAL_TX         4096
+#define STACK_SERIAL_STATS      4096
 #define STACK_DISPLAY           8192
 
 // ── Task priorities ──────────────────────────────────────────────────────────
 #define PRIO_RADIO              4
 #define PRIO_SERIAL             3
+#define PRIO_SERIAL_STATS       2
 #define PRIO_DISPLAY            1
 
 // ── LBT (Listen-Before-Talk) CSMA parameters ─────────────────────────────────
@@ -106,3 +108,4 @@
 
 // ── Display refresh interval (ms) ────────────────────────────────────────────
 #define DISPLAY_REFRESH_MS      500
+#define STATS_FRAME_INTERVAL_MS 1000

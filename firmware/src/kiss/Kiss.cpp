@@ -2,6 +2,14 @@
 #include <string.h>
 
 size_t Kiss::encode(const IpFrame& frame, uint8_t* outBuf, size_t outBufLen) {
+    return encodeRaw(KISS_DATA_FRAME, frame.data, frame.len, outBuf, outBufLen);
+}
+
+size_t Kiss::encodeRaw(uint8_t port,
+                       const uint8_t* payload,
+                       size_t payloadLen,
+                       uint8_t* outBuf,
+                       size_t outBufLen) {
     size_t i = 0;
 
     auto write = [&](uint8_t b) {
@@ -9,10 +17,10 @@ size_t Kiss::encode(const IpFrame& frame, uint8_t* outBuf, size_t outBufLen) {
     };
 
     write(KISS_FEND);
-    write(KISS_DATA_FRAME);   // port 0, data frame
+    write(port);
 
-    for (uint16_t n = 0; n < frame.len; n++) {
-        uint8_t b = frame.data[n];
+    for (size_t n = 0; n < payloadLen; n++) {
+        uint8_t b = payload[n];
         if (b == KISS_FEND) {
             write(KISS_FESC);
             write(KISS_TFEND);

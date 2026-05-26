@@ -146,8 +146,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             Ok(n) => {
                                 for &byte in &read_buf[..n] {
-                                    if decoder.feed(byte, &mut decoded_buf) {
-                                        if !decoded_buf.is_empty() {
+                                    if let Some(port) = decoder.feed(byte, &mut decoded_buf) {
+                                        if port == kiss::KISS_DATA_PORT && !decoded_buf.is_empty() {
                                             println!(
                                                 "[kiss_tun] radio → {}: injecting {} bytes",
                                                 tun_name_t2,
@@ -158,6 +158,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     "[kiss_tun] radio→tun: dropped invalid IP packet or write error: {}",
                                                     e
                                                 );
+                                            }
+                                        } else if port == kiss::KISS_STATS_PORT && !decoded_buf.is_empty() {
+                                            match std::str::from_utf8(&decoded_buf) {
+                                                Ok(text) => eprintln!("[TNC stats] {}", text),
+                                                Err(_) => eprintln!("[TNC stats] <non-utf8 payload>"),
                                             }
                                         }
                                     }

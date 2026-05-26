@@ -1,3 +1,6 @@
+pub const KISS_DATA_PORT: u8 = 0x00;
+pub const KISS_STATS_PORT: u8 = 0x10;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
     Idle,
@@ -44,7 +47,7 @@ impl KissDecoder {
         self.overflow = false;
     }
 
-    pub fn feed(&mut self, byte: u8, out: &mut Vec<u8>) -> bool {
+    pub fn feed(&mut self, byte: u8, out: &mut Vec<u8>) -> Option<u8> {
         match self.state {
             State::Idle => {
                 if byte == 0xC0 {
@@ -64,9 +67,10 @@ impl KissDecoder {
                     if self.overflow || self.buf.len() <= 1 {
                         self.buf.clear();
                         self.overflow = false;
-                        return false;
+                        return None;
                     }
-                    if self.buf[0] != 0x00 {
+                    let port = self.buf[0];
+                    if port != KISS_DATA_PORT && port != KISS_STATS_PORT {
                         // Non-zero port: bytes accumulated between KISS frames.
                         // The ESP32 debug output lands here as plain ASCII text.
                         if let Ok(text) = std::str::from_utf8(&self.buf) {
@@ -78,7 +82,7 @@ impl KissDecoder {
                             }
                         }
                         self.buf.clear();
-                        return false;
+                        return None;
                     }
                     
                     // Copy payload (excluding port byte) to output
@@ -87,7 +91,7 @@ impl KissDecoder {
                     self.buf.clear();
                     
                     // Keep InFrame state for back-to-back single-FEND streaming
-                    return true;
+                    return Some(port);
                 } else if byte == 0xDB {
                     self.state = State::Escape;
                 } else {
@@ -114,7 +118,7 @@ impl KissDecoder {
                 }
             }
         }
-        false
+        None
     }
 }
 
@@ -151,7 +155,7 @@ mod tests {
         let mut success = false;
 
         for &b in &encoded {
-            if decoder.feed(b, &mut decoded) {
+            if decoder.feed(b, &mut decoded).is_some() {
                 success = true;
                 break;
             }
@@ -196,7 +200,7 @@ mod tests {
         let mut results = Vec::new();
 
         for &b in &stream {
-            if decoder.feed(b, &mut decoded) {
+            if decoder.feed(b, &mut decoded).is_some() {
                 results.push(decoded.clone());
             }
         }
