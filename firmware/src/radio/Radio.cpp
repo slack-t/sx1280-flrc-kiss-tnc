@@ -132,10 +132,20 @@ int16_t Radio::readPacket(Packet& pkt) {
 }
 
 bool Radio::isChannelBusy() {
-    // SX1280 scanChannel() is LoRa CAD only — it returns RADIOLIB_ERR_WRONG_MODEM in
-    // FLRC mode, which would make every call report the channel as permanently busy.
-    // This is a dedicated P2P link; collisions cannot occur, so LBT is not needed.
-    return false;
+    // Radio is guaranteed to be in RX mode here: transmit() calls _startReceiveNoLock()
+    // after the last fragment, and setup() calls startReceive() at boot.
+    //
+    // Do NOT call startReceive() here. The SX1280 startReceive() resets the RX state
+    // machine and overwrites the FIFO. If radioRxTask has received a packet but hasn't
+    // called readPacket() yet, that packet is silently destroyed.
+    //
+    // Instead, dwell in the already-active RX mode and read instantaneous RSSI directly
+    // via SX1280 command 0x15 (GetInstantaneousRssi), which is non-destructive.
+    xSemaphoreTake(_spiMutex, portMAX_DELAY);
+    delayMicroseconds(RADIO_LBT_SENSE_US);
+    float rssi = _radio.getRSSI();
+    xSemaphoreGive(_spiMutex);
+    return rssi > (float)RADIO_LBT_RSSI_THRESHOLD_DBM;
 }
 
 void IRAM_ATTR Radio::_dio1Isr() {

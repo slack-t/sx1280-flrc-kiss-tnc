@@ -168,6 +168,16 @@ static void radioTxTask(void*) {
 
         Serial.printf("[radio_tx] Sending frame: len=%d, seq=%d, frags=%d\n", frame.len, seq, total_frags);
 
+        // LBT-CSMA: sense channel before the first fragment only.
+        // Inter-fragment timing stays deterministic (fixed 8 ms gap).
+        for (int lbt = 0; radio.isChannelBusy(); lbt++) {
+            if (lbt >= RADIO_LBT_MAX_RETRIES) break;
+            uint32_t backoff_ms = RADIO_LBT_BACKOFF_MIN_MS +
+                (esp_random() % (RADIO_LBT_BACKOFF_MAX_MS - RADIO_LBT_BACKOFF_MIN_MS + 1));
+            Serial.printf("[radio_tx] LBT busy (attempt %d), backing off %lu ms\n", lbt + 1, backoff_ms);
+            vTaskDelay(pdMS_TO_TICKS(backoff_ms));
+        }
+
         while (offset < frame.len) {
             const uint16_t chunk   = (frame.len - offset < FRAMING_FRAG_DATA)
                                      ? static_cast<uint16_t>(frame.len - offset)
@@ -274,7 +284,11 @@ static void serialTxTask(void*) {
     for (;;) {
         xQueueReceive(rxQueue, &frame, portMAX_DELAY);
         size_t encLen = Kiss::encode(frame, encBuf, sizeof(encBuf));
-        Serial.write(encBuf, encLen);
+        size_t written = Serial.write(encBuf, encLen);
+        if (written != encLen) {
+            Serial.printf("[serial_tx] WARN: partial write %u/%u — frame truncated, Pi will discard\n",
+                          written, encLen);
+        }
     }
 }
 

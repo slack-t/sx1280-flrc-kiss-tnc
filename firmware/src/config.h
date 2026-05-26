@@ -80,6 +80,18 @@
 #define PRIO_SERIAL             3
 #define PRIO_DISPLAY            1
 
+// ── LBT (Listen-Before-Talk) CSMA parameters ─────────────────────────────────
+// Channel is considered busy when instantaneous RSSI exceeds this level (dBm).
+// -85 dBm detects the remote node reliably while ignoring distant background sources.
+#define RADIO_LBT_RSSI_THRESHOLD_DBM   -85
+// Dwell time in RX before reading RSSI — allows AGC and RSSI circuit to settle.
+#define RADIO_LBT_SENSE_US              500
+// Maximum busy-channel retries before forcing a TX anyway (starvation guard).
+#define RADIO_LBT_MAX_RETRIES           10
+// Random backoff window [MIN, MAX] ms between retries.
+#define RADIO_LBT_BACKOFF_MIN_MS        2
+#define RADIO_LBT_BACKOFF_MAX_MS        20
+
 // ── Display refresh interval (ms) ────────────────────────────────────────────
 #define DISPLAY_REFRESH_MS      500
 

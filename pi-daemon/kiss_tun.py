@@ -67,22 +67,33 @@ class KissDecoder:
         self._in_frame = False
         self._escape   = False
         self._overflow = False
+        self._log_buf: bytearray = bytearray()  # out-of-frame bytes (ESP32 debug output)
 
     def feed(self, data: bytes):
-        """Yield complete (port, payload) tuples as frames arrive."""
+        """Yield (port, payload) for KISS data frames, or (-1, line) for ESP32 log lines."""
         for b in data:
             if not self._in_frame:
                 if b == FEND:
+                    yield from self._drain_log()
                     self._in_frame = True
                     self._buf.clear()
                     self._escape   = False
                     self._overflow = False
+                else:
+                    self._log_buf.append(b)
+                    if b == 0x0A or len(self._log_buf) >= 256:  # newline or buffer full
+                        yield from self._drain_log()
             else:
                 if b == FEND:
                     if not self._overflow and len(self._buf) > 1:
                         port    = self._buf[0]
                         payload = bytes(self._buf[1:])
-                        yield (port, payload)
+                        if port == 0x00:
+                            yield (port, payload)
+                        else:
+                            # Non-zero port: bytes accumulated between KISS frames.
+                            # The ESP32 debug output lands here as plain ASCII text.
+                            yield from self._decode_as_log(bytes([port]) + payload)
                     # Trailing FEND stays in IN_FRAME — acts as leading FEND of
                     # the next frame for single-FEND back-to-back streams.
                     self._buf.clear()
@@ -101,6 +112,22 @@ class KissDecoder:
                         self._buf.append(b)
                     else:
                         self._overflow = True
+
+    def _drain_log(self):
+        if self._log_buf:
+            yield from self._decode_as_log(bytes(self._log_buf))
+            self._log_buf.clear()
+
+    @staticmethod
+    def _decode_as_log(raw: bytes):
+        try:
+            text = raw.decode('ascii')
+        except UnicodeDecodeError:
+            return  # binary garbage between frames, discard silently
+        for line in text.splitlines():
+            line = line.strip()
+            if line:
+                yield (-1, line.encode())
 
 
 def tun_to_radio(tun, ser, mtu: int, stop_event: threading.Event):
@@ -143,11 +170,11 @@ def radio_to_tun(tun, ser, stop_event: threading.Event):
                             os.write(tun.fileno(), payload)
                         except OSError as e:
                             if e.errno == errno.EINVAL:
-                                # Malformed packet received on serial (e.g. bootloader logs/garbage bytes)
-                                # and rejected by the kernel. Ignore it to prevent connection drop.
                                 print(f"[kiss_tun] radio→tun: dropped invalid IP packet (len={len(payload)})", flush=True)
                             else:
                                 raise
+                    elif port == -1:
+                        print(f"[ESP32] {payload.decode()}", flush=True)
             else:
                 time.sleep(0.001)
         except (serial.SerialException, OSError) as e:

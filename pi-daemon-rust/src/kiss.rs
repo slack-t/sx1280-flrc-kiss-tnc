@@ -10,6 +10,7 @@ pub struct KissDecoder {
     buf: Vec<u8>,
     max_len: usize,
     overflow: bool,
+    log_buf: Vec<u8>,  // out-of-frame bytes (ESP32 debug output)
 }
 
 impl KissDecoder {
@@ -19,6 +20,21 @@ impl KissDecoder {
             buf: Vec::with_capacity(max_len + 1),
             max_len,
             overflow: false,
+            log_buf: Vec::new(),
+        }
+    }
+
+    fn flush_log(&mut self) {
+        if !self.log_buf.is_empty() {
+            if let Ok(text) = std::str::from_utf8(&self.log_buf) {
+                for line in text.lines() {
+                    let line = line.trim();
+                    if !line.is_empty() {
+                        eprintln!("[ESP32] {}", line);
+                    }
+                }
+            }
+            self.log_buf.clear();
         }
     }
 
@@ -32,9 +48,15 @@ impl KissDecoder {
         match self.state {
             State::Idle => {
                 if byte == 0xC0 {
+                    self.flush_log();
                     self.buf.clear();
                     self.overflow = false;
                     self.state = State::InFrame;
+                } else {
+                    self.log_buf.push(byte);
+                    if byte == b'\n' || self.log_buf.len() >= 256 {
+                        self.flush_log();
+                    }
                 }
             }
             State::InFrame => {
@@ -44,7 +66,17 @@ impl KissDecoder {
                         self.overflow = false;
                         return false;
                     }
-                    if self.buf[0] != 0x00 { // port 0, data frame
+                    if self.buf[0] != 0x00 {
+                        // Non-zero port: bytes accumulated between KISS frames.
+                        // The ESP32 debug output lands here as plain ASCII text.
+                        if let Ok(text) = std::str::from_utf8(&self.buf) {
+                            for line in text.lines() {
+                                let line = line.trim();
+                                if !line.is_empty() {
+                                    eprintln!("[ESP32] {}", line);
+                                }
+                            }
+                        }
                         self.buf.clear();
                         return false;
                     }
