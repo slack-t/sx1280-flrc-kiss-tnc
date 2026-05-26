@@ -158,11 +158,11 @@ void test_link_data_packet_roundtrip() {
         payload[i] = static_cast<uint8_t>(i);
     }
 
-    framingBuildDataPacket(pkt, 7, 2, 4, true, payload, 31);
+    framingBuildDataPacket(pkt, 0x1234, 2, 4, true, payload, 31);
 
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(LinkPacketType::DATA),
                             static_cast<uint8_t>(framingPacketType(pkt)));
-    TEST_ASSERT_EQUAL_UINT8(7, framingPacketSeq(pkt));
+    TEST_ASSERT_EQUAL_UINT16(0x1234, framingPacketSeq(pkt));
     TEST_ASSERT_EQUAL_UINT8(2, framingFragmentIndex(pkt));
     TEST_ASSERT_EQUAL_UINT8(4, framingTotalFrags(pkt));
     TEST_ASSERT_TRUE(framingIsRoundEnd(pkt));
@@ -174,7 +174,7 @@ void test_link_data_packet_roundtrip() {
 void test_link_ack_packet_roundtrip() {
     Packet pkt;
     AckFrame ack;
-    ack.seq           = 9;
+    ack.seq           = 0xBEEF;
     ack.total_frags   = 4;
     ack.received_mask = 0x0B;
 
@@ -182,7 +182,7 @@ void test_link_ack_packet_roundtrip() {
 
     AckFrame decoded;
     TEST_ASSERT_TRUE(framingParseAck(pkt, decoded));
-    TEST_ASSERT_EQUAL_UINT8(ack.seq, decoded.seq);
+    TEST_ASSERT_EQUAL_UINT16(ack.seq, decoded.seq);
     TEST_ASSERT_EQUAL_UINT8(ack.total_frags, decoded.total_frags);
     TEST_ASSERT_EQUAL_UINT8(ack.received_mask, decoded.received_mask);
 }

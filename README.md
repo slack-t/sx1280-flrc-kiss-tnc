@@ -42,7 +42,7 @@ This project implements a KISS-compatible TNC modem operating in high-speed Fast
 *   **Stateful KISS Decoder**: Full compliance with single-FEND and double-FEND framing standards for maximum compatibility with standard TNC hosts.
 *   **Robust Pi Bridge**: The host-side bridge features automatic serial reconnection loops and a 64KB read buffer to prevent Linux `EMSGSIZE` (message too long) kernel crash exceptions.
 *   **Offscreen Buffered Screen Graphics**: Utilizes LovyanGFX for SSD1306 OLED screen updating with 1-bit double-buffering to eliminate visual tearing and flickering.
-*   **Selective-Repeat ARQ**: Fragmented FLRC frames use bitmap ACKs and selective retransmission. ACK packets are padded to full radio length for FLRC reliability. A `CompletedFrameCache` suppresses duplicate frame delivery while re-ACKing retransmits within a 1.5 s window. Duplicate fragment arrivals (ARQ retransmits of already-received fragments) are idempotent — only genuinely new fragment data is written to the reassembly buffer, preventing fallback-timer drift and spurious ACK floods.
+*   **Selective-Repeat ARQ**: Fragmented FLRC frames use bitmap ACKs and selective retransmission. The current wire format uses a 16-bit frame sequence number and a 4-byte fragment header to eliminate replay ambiguity from the old 4-bit sequence space. ACK packets are padded to full radio length for FLRC reliability, and a `CompletedFrameCache` suppresses duplicate frame delivery while re-ACKing retransmits within a 1.5 s window. Duplicate fragment arrivals are idempotent — only genuinely new fragment data is written to the reassembly buffer, preventing fallback-timer drift and spurious ACK floods.
 
 ---
 
@@ -142,7 +142,7 @@ sudo python3 pi-daemon/kiss_tun.py --port /dev/ttyACM0 --addr 10.0.0.2/30
 *   `--port`: Serial interface path (defaults to `/dev/ttyACM0`).
 *   `--addr`: Virtual IP allocation and subnet mask (e.g. `10.0.0.1/30`).
 *   `--name`: Linux interface name (defaults to `tun0`).
-*   `--mtu`: Network MTU size. Must match firmware `IP_MTU` (defaults to **496** with ARQ-enabled 3-byte fragment headers).
+*   `--mtu`: Network MTU size. Must match firmware `IP_MTU` (defaults to **492** with ARQ-enabled 4-byte fragment headers and 16-bit frame sequencing).
 
 ### 4. Testing the TCP/IP Link
 Once both bridge daemons are active, verify the point-to-point link:

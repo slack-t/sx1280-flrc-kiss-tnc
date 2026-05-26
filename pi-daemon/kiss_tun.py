@@ -33,9 +33,9 @@ FESC  = 0xDB
 TFEND = 0xDC
 TFESC = 0xDD
 
-# IP MTU after layer-2 fragmentation/reassembly with a 3-byte radio link header.
-# Must match firmware IP_MTU = FRAMING_MAX_FRAGS * (PACKET_MAX_LEN - 3) = 496.
-DEFAULT_MTU = 496
+# IP MTU after layer-2 fragmentation/reassembly with a 4-byte radio link header.
+# Must match firmware IP_MTU = FRAMING_MAX_FRAGS * (PACKET_MAX_LEN - 4) = 492.
+DEFAULT_MTU = 492
 
 # Seconds to wait before retrying a lost serial connection
 RECONNECT_DELAY_S = 5

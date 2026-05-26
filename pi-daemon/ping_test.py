@@ -21,8 +21,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-# Must match firmware config.h
-FRAG_DATA = 125   # data payload bytes per radio fragment
+# Must match firmware config.h / Framing.h
+FRAG_DATA = 123   # data payload bytes per radio fragment (127-byte FLRC packet - 4-byte link header)
 IP_HDR    = 28    # IPv4 (20) + ICMP (8) fixed overhead
 
 
@@ -195,13 +195,13 @@ def main() -> None:
         # This reveals whether loss is flat within a fragment count or rising.
         sizes = [
             56,    # 84 B IP  — 1F mid   (standard ping default)
-            97,    # 125 B IP — 1F max
-            160,   # 188 B IP — 2F mid
-            222,   # 250 B IP — 2F max
+            95,    # 123 B IP — 1F max
+            157,   # 185 B IP — 2F mid
+            218,   # 246 B IP — 2F max
             280,   # 308 B IP — 3F mid
-            347,   # 375 B IP — 3F max
-            400,   # 428 B IP — 4F mid
-            max_s, # 500 B IP — 4F max   (MTU ceiling)
+            341,   # 369 B IP — 3F max
+            403,   # 431 B IP — 4F mid
+            max_s, # 492 B IP — 4F max   (MTU ceiling)
         ]
 
     sizes = [s for s in sizes if 1 <= s <= max_s]

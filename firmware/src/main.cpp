@@ -19,17 +19,51 @@ static QueueHandle_t rxQueue;   // IpFrame: RadioRX   → SerialTX
 static QueueHandle_t ackQueue;  // AckFrame: RadioRX  → RadioTX
 
 struct CompletedFrameCache {
-    uint8_t  seq         = FRAMING_SEQ_UNSET;
+    uint16_t seq         = FRAMING_SEQ_UNSET;
     uint8_t  total_frags = 0;
     uint8_t  ack_mask    = 0;
     uint32_t tick_ms     = 0;
 };
+
+static uint32_t ackFallbackDelayMs(uint8_t total_frags) {
+    return RADIO_ACK_FALLBACK_DELAY_MS +
+           static_cast<uint32_t>(total_frags > 0 ? (total_frags - 1u) * 2u : 0u);
+}
+
+static uint32_t ackTurnaroundDelayMs(uint8_t total_frags) {
+    return RADIO_ACK_TURNAROUND_DELAY_MS +
+           static_cast<uint32_t>(total_frags > 0 ? (total_frags - 1u) : 0u);
+}
+
+static uint32_t ackTimeoutMs(uint8_t total_frags) {
+    return RADIO_ACK_TIMEOUT_MS +
+           static_cast<uint32_t>(total_frags > 0 ? (total_frags - 1u) * RADIO_INTER_FRAG_DELAY_MS : 0u);
+}
+
+static uint32_t reassemblyTimeoutMs(uint8_t total_frags) {
+    return RADIO_REASSEMBLY_TIMEOUT_MS +
+           static_cast<uint32_t>(total_frags > 0 ? (total_frags - 1u) * RADIO_INTER_FRAG_DELAY_MS * 2u : 0u);
+}
 
 static void noteRadioError() {
     auto& sm = StatsManager::instance();
     sm.lock();
     sm.get().errorCount++;
     sm.get().radioState = RadioState::ERROR;
+    sm.unlock();
+}
+
+static void noteQueueDrop() {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    sm.get().arqQueueDrops++;
+    sm.unlock();
+}
+
+static void noteIdentityReset() {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    sm.get().arqIdentityResets++;
     sm.unlock();
 }
 
@@ -50,9 +84,11 @@ static void finalizeReassembly(Reassembler& ra, CompletedFrameCache& completed) 
     sm.get().rxBytes   += frame.len;
     sm.get().rssi       = frame.rssi;
     sm.get().radioState = RadioState::RX;
+    sm.get().arqFramesCompleted++;
     sm.unlock();
 
     if (xQueueSend(rxQueue, &frame, pdMS_TO_TICKS(RX_QUEUE_TIMEOUT_MS)) != pdPASS) {
+        noteQueueDrop();
         noteRadioError();
     }
     completed.seq         = ra.seq;
@@ -75,8 +111,16 @@ static void sendAckForReassembly(Reassembler& ra) {
     Packet pkt;
     framingBuildAckPacket(pkt, ack);
 
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    sm.get().arqAckTxCount++;
+    sm.unlock();
+
     int16_t err = radio.transmit(pkt, true);
     if (err != RADIOLIB_ERR_NONE) {
+        sm.lock();
+        sm.get().arqAckTxErrors++;
+        sm.unlock();
         noteRadioError();
         return;
     }
@@ -102,21 +146,23 @@ static void radioRxTask(void*) {
         uint32_t wait_ms = 30000;
         if (ra.seq != FRAMING_SEQ_UNSET) {
             uint32_t idle_ms = millis() - ra.last_tick_ms;
+            const uint32_t reassembly_ms = reassemblyTimeoutMs(ra.total_frags);
             if (ra.ack_pending) {
-                if (idle_ms >= RADIO_ACK_FALLBACK_DELAY_MS) {
+                const uint32_t now_ms = millis();
+                if (now_ms >= ra.ack_due_ms) {
                     sendAckForReassembly(ra);
                     if (!ra.ack_pending && ra.isComplete()) {
                         finalizeReassembly(ra, completed);
                     }
                     continue;
                 }
-                wait_ms = RADIO_ACK_FALLBACK_DELAY_MS - idle_ms;
-            } else if (!ra.isComplete() && idle_ms >= RADIO_REASSEMBLY_TIMEOUT_MS) {
+                wait_ms = ra.ack_due_ms - now_ms;
+            } else if (!ra.isComplete() && idle_ms >= reassembly_ms) {
                 noteReassemblyDrop();
                 ra.reset();
                 continue;
             } else if (!ra.isComplete()) {
-                wait_ms = RADIO_REASSEMBLY_TIMEOUT_MS - idle_ms;
+                wait_ms = reassembly_ms - idle_ms;
             }
         }
 
@@ -154,13 +200,18 @@ static void radioRxTask(void*) {
                 noteRadioError();
                 continue;
             }
+            auto& sm = StatsManager::instance();
+            sm.lock();
+            sm.get().arqAckRxCount++;
+            sm.unlock();
             if (xQueueSend(ackQueue, &ack, 0) != pdPASS) {
+                noteQueueDrop();
                 noteRadioError();
             }
             continue;
         }
 
-        const uint8_t seq           = framingPacketSeq(pkt);
+        const uint16_t seq          = framingPacketSeq(pkt);
         const uint8_t idx           = framingFragmentIndex(pkt);
         const uint8_t total_frags   = framingTotalFrags(pkt);
         const uint8_t frag_data_len = framingPayloadLen(pkt);
@@ -177,33 +228,43 @@ static void radioRxTask(void*) {
             completed.total_frags == total_frags &&
             (now_ms - completed.tick_ms) <= RADIO_DUP_CACHE_MS) {
             // Re-ACK without re-delivering. Use AckFrame + Packet directly to
-            // avoid a 513-byte Reassembler on the task stack.
+            // avoid a large Reassembler on the task stack.
             AckFrame dupAck;
             dupAck.seq           = completed.seq;
             dupAck.total_frags   = completed.total_frags;
             dupAck.received_mask = completed.ack_mask;
             Packet ackPkt;
             framingBuildAckPacket(ackPkt, dupAck);
+            auto& sm = StatsManager::instance();
+            sm.lock();
+            sm.get().arqDuplicateSuppressed++;
+            sm.get().arqAckTxCount++;
+            sm.unlock();
             if (radio.transmit(ackPkt, true) != RADIOLIB_ERR_NONE) {
+                sm.lock();
+                sm.get().arqAckTxErrors++;
+                sm.unlock();
                 noteRadioError();
             }
             continue;
         }
 
         if (ra.seq != FRAMING_SEQ_UNSET &&
-            (now_ms - ra.last_tick_ms > RADIO_REASSEMBLY_TIMEOUT_MS)) {
+            (now_ms - ra.last_tick_ms > reassemblyTimeoutMs(ra.total_frags))) {
             noteReassemblyDrop();
             ra.reset();
         }
 
         if (ra.seq != seq) {
             if (ra.seq != FRAMING_SEQ_UNSET) {
+                noteIdentityReset();
                 noteReassemblyDrop();
             }
             ra.reset();
             ra.seq         = seq;
             ra.total_frags = total_frags;
         } else if (ra.total_frags != total_frags) {
+            noteIdentityReset();
             noteReassemblyDrop();
             ra.reset();
             ra.seq         = seq;
@@ -220,39 +281,44 @@ static void radioRxTask(void*) {
             ra.last_tick_ms   = now_ms;
             ra.last_rssi      = pkt.rssi;
             ra.ack_pending    = true;
+            ra.ack_due_ms     = now_ms + ackFallbackDelayMs(total_frags);
         }
 
         if (round_end) {
-            // Sender signals end of its TX burst — must ACK even if this
-            // fragment was already received (dup round_end on retransmit).
+            // Sender signals end of its TX burst. Schedule a short turnaround
+            // delay before ACKing so the remote side has time to switch back
+            // into RX after the last fragment of a multi-fragment burst.
             ra.ack_pending = true;
-            sendAckForReassembly(ra);
-            // Deliver regardless of whether the ACK TX succeeded: the sender
-            // will retransmit if it gets no ACK, and the dup cache will re-ACK
-            // without re-delivering.
-            if (ra.isComplete()) {
-                finalizeReassembly(ra, completed);
-            }
+            ra.last_tick_ms = now_ms;
+            ra.ack_due_ms = now_ms + ackTurnaroundDelayMs(total_frags);
         }
     }
 }
 
 // ── Task: Radio TX ────────────────────────────────────────────────────────────
-// Dequeues IP frames, fragments into ≤124-byte radio packets, retransmits missing
+// Dequeues IP frames, fragments into ≤123-byte radio packets, retransmits missing
 // fragments using selective-repeat ARQ until the receiver ACK bitmap is complete.
 static void radioTxTask(void*) {
     IpFrame frame;
-    static uint8_t seq = 0;
+    static uint16_t seq = 0;
 
     for (;;) {
         xQueueReceive(txQueue, &frame, portMAX_DELAY);
 
         xQueueReset(ackQueue);
-        seq = (seq + 1) & 0x0F;
+        seq++;
+        if (seq == FRAMING_SEQ_UNSET) {
+            seq++;
+        }
         const uint8_t total_frags = static_cast<uint8_t>(
             (frame.len + FRAMING_FRAG_DATA - 1) / FRAMING_FRAG_DATA);
         uint8_t pending_mask = framingExpectedMask(total_frags);
         bool delivered = false;
+
+        auto& sm = StatsManager::instance();
+        sm.lock();
+        sm.get().arqFramesStarted++;
+        sm.unlock();
 
         // LBT-CSMA: sense channel before the first fragment only.
         for (int lbt = 0; radio.isChannelBusy(); lbt++) {
@@ -287,7 +353,6 @@ static void radioTxTask(void*) {
                 framingBuildDataPacket(pkt, seq, idx, total_frags, round_end,
                                        frame.data + offset, chunk);
 
-                auto& sm = StatsManager::instance();
                 sm.lock();
                 sm.get().radioState = RadioState::TX;
                 if (round > 0) {
@@ -315,7 +380,7 @@ static void radioTxTask(void*) {
 
             AckFrame ack;
             bool got_ack = false;
-            const uint32_t ack_deadline = millis() + RADIO_ACK_TIMEOUT_MS;
+            const uint32_t ack_deadline = millis() + ackTimeoutMs(total_frags);
             while (millis() < ack_deadline) {
                 uint32_t now = millis();
                 if (now >= ack_deadline) {
@@ -352,6 +417,10 @@ static void radioTxTask(void*) {
         }
 
         if (!delivered) {
+            auto& sm = StatsManager::instance();
+            sm.lock();
+            sm.get().arqFramesFailed++;
+            sm.unlock();
             noteRadioError();
         }
     }
