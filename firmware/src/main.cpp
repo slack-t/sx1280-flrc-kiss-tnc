@@ -176,12 +176,17 @@ static void radioRxTask(void*) {
         if (completed.seq == seq &&
             completed.total_frags == total_frags &&
             (now_ms - completed.tick_ms) <= RADIO_DUP_CACHE_MS) {
-            Reassembler dupAck;
+            // Re-ACK without re-delivering. Use AckFrame + Packet directly to
+            // avoid a 513-byte Reassembler on the task stack.
+            AckFrame dupAck;
             dupAck.seq           = completed.seq;
             dupAck.total_frags   = completed.total_frags;
             dupAck.received_mask = completed.ack_mask;
-            dupAck.ack_pending   = true;
-            sendAckForReassembly(dupAck);
+            Packet ackPkt;
+            framingBuildAckPacket(ackPkt, dupAck);
+            if (radio.transmit(ackPkt, true) != RADIOLIB_ERR_NONE) {
+                noteRadioError();
+            }
             continue;
         }
 
@@ -205,15 +210,26 @@ static void radioRxTask(void*) {
             ra.total_frags = total_frags;
         }
 
-        memcpy(ra.buf + idx * FRAMING_FRAG_DATA, pkt.data + FRAMING_DATA_HDR_LEN, frag_data_len);
-        ra.frag_len[idx]   = frag_data_len;
-        ra.received_mask  |= static_cast<uint8_t>(1u << idx);
-        ra.last_tick_ms    = now_ms;
-        ra.last_rssi       = pkt.rssi;
-        ra.ack_pending     = true;
+        const uint8_t bit          = static_cast<uint8_t>(1u << idx);
+        const bool    is_new_frag  = !(ra.received_mask & bit);
+
+        if (is_new_frag) {
+            memcpy(ra.buf + idx * FRAMING_FRAG_DATA, pkt.data + FRAMING_DATA_HDR_LEN, frag_data_len);
+            ra.frag_len[idx]  = frag_data_len;
+            ra.received_mask |= bit;
+            ra.last_tick_ms   = now_ms;
+            ra.last_rssi      = pkt.rssi;
+            ra.ack_pending    = true;
+        }
 
         if (round_end) {
+            // Sender signals end of its TX burst — must ACK even if this
+            // fragment was already received (dup round_end on retransmit).
+            ra.ack_pending = true;
             sendAckForReassembly(ra);
+            // Deliver regardless of whether the ACK TX succeeded: the sender
+            // will retransmit if it gets no ACK, and the dup cache will re-ACK
+            // without re-delivering.
             if (ra.isComplete()) {
                 finalizeReassembly(ra, completed);
             }

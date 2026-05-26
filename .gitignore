@@ -8,3 +8,4 @@ pi-daemon/__pycache__/
 
 # Submodule — tracked separately
 misc/tncattach/
+.gitnexus
