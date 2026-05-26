@@ -72,6 +72,7 @@
 #define RADIO_ACK_TIMEOUT_MS         80    // Sender waits this long for a bitmap ACK
 #define RADIO_ACK_FALLBACK_DELAY_MS  45    // Receiver waits this long before ACKing if END was lost
 #define RADIO_REASSEMBLY_TIMEOUT_MS  500   // Drop stale partial frames after silence
+#define RADIO_DUP_CACHE_MS           1500  // Re-ACK recently delivered frames without re-delivering
 
 
 // ── Task stack sizes (bytes) ─────────────────────────────────────────────────

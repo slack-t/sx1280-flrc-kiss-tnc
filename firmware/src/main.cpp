@@ -18,6 +18,13 @@ static QueueHandle_t txQueue;   // IpFrame: SerialRX  → RadioTX
 static QueueHandle_t rxQueue;   // IpFrame: RadioRX   → SerialTX
 static QueueHandle_t ackQueue;  // AckFrame: RadioRX  → RadioTX
 
+struct CompletedFrameCache {
+    uint8_t  seq         = FRAMING_SEQ_UNSET;
+    uint8_t  total_frags = 0;
+    uint8_t  ack_mask    = 0;
+    uint32_t tick_ms     = 0;
+};
+
 static void noteRadioError() {
     auto& sm = StatsManager::instance();
     sm.lock();
@@ -26,7 +33,7 @@ static void noteRadioError() {
     sm.unlock();
 }
 
-static void finalizeReassembly(Reassembler& ra) {
+static void finalizeReassembly(Reassembler& ra, CompletedFrameCache& completed) {
     IpFrame frame;
     frame.len = 0;
     for (uint8_t i = 0; i < ra.total_frags; i++) {
@@ -48,6 +55,10 @@ static void finalizeReassembly(Reassembler& ra) {
     if (xQueueSend(rxQueue, &frame, pdMS_TO_TICKS(RX_QUEUE_TIMEOUT_MS)) != pdPASS) {
         noteRadioError();
     }
+    completed.seq         = ra.seq;
+    completed.total_frags = ra.total_frags;
+    completed.ack_mask    = ra.received_mask;
+    completed.tick_ms     = millis();
     ra.reset();
 }
 
@@ -71,9 +82,6 @@ static void sendAckForReassembly(Reassembler& ra) {
     }
 
     ra.ack_pending = false;
-    if (ra.isComplete()) {
-        finalizeReassembly(ra);
-    }
 }
 
 static void noteReassemblyDrop() {
@@ -88,6 +96,7 @@ static void noteReassemblyDrop() {
 static void radioRxTask(void*) {
     Packet pkt;
     static Reassembler ra;   // static: lives in BSS, not on the task stack
+    static CompletedFrameCache completed;
 
     for (;;) {
         uint32_t wait_ms = 30000;
@@ -96,6 +105,9 @@ static void radioRxTask(void*) {
             if (ra.ack_pending) {
                 if (idle_ms >= RADIO_ACK_FALLBACK_DELAY_MS) {
                     sendAckForReassembly(ra);
+                    if (!ra.ack_pending && ra.isComplete()) {
+                        finalizeReassembly(ra, completed);
+                    }
                     continue;
                 }
                 wait_ms = RADIO_ACK_FALLBACK_DELAY_MS - idle_ms;
@@ -112,6 +124,9 @@ static void radioRxTask(void*) {
         if (got == pdFALSE) {
             if (ra.seq != FRAMING_SEQ_UNSET && ra.ack_pending) {
                 sendAckForReassembly(ra);
+                if (!ra.ack_pending && ra.isComplete()) {
+                    finalizeReassembly(ra, completed);
+                }
                 continue;
             }
             if (ra.seq != FRAMING_SEQ_UNSET && !ra.isComplete()) {
@@ -150,6 +165,7 @@ static void radioRxTask(void*) {
         const uint8_t total_frags   = framingTotalFrags(pkt);
         const uint8_t frag_data_len = framingPayloadLen(pkt);
         const bool    round_end     = framingIsRoundEnd(pkt);
+        const uint32_t now_ms       = millis();
 
         if (total_frags == 0 || total_frags > FRAMING_MAX_FRAGS ||
             idx >= total_frags || frag_data_len > FRAMING_FRAG_DATA) {
@@ -157,8 +173,20 @@ static void radioRxTask(void*) {
             continue;
         }
 
+        if (completed.seq == seq &&
+            completed.total_frags == total_frags &&
+            (now_ms - completed.tick_ms) <= RADIO_DUP_CACHE_MS) {
+            Reassembler dupAck;
+            dupAck.seq           = completed.seq;
+            dupAck.total_frags   = completed.total_frags;
+            dupAck.received_mask = completed.ack_mask;
+            dupAck.ack_pending   = true;
+            sendAckForReassembly(dupAck);
+            continue;
+        }
+
         if (ra.seq != FRAMING_SEQ_UNSET &&
-            (millis() - ra.last_tick_ms > RADIO_REASSEMBLY_TIMEOUT_MS)) {
+            (now_ms - ra.last_tick_ms > RADIO_REASSEMBLY_TIMEOUT_MS)) {
             noteReassemblyDrop();
             ra.reset();
         }
@@ -180,12 +208,15 @@ static void radioRxTask(void*) {
         memcpy(ra.buf + idx * FRAMING_FRAG_DATA, pkt.data + FRAMING_DATA_HDR_LEN, frag_data_len);
         ra.frag_len[idx]   = frag_data_len;
         ra.received_mask  |= static_cast<uint8_t>(1u << idx);
-        ra.last_tick_ms    = millis();
+        ra.last_tick_ms    = now_ms;
         ra.last_rssi       = pkt.rssi;
         ra.ack_pending     = true;
 
         if (round_end) {
             sendAckForReassembly(ra);
+            if (ra.isComplete()) {
+                finalizeReassembly(ra, completed);
+            }
         }
     }
 }

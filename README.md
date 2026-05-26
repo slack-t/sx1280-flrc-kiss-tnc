@@ -42,6 +42,7 @@ This project implements a KISS-compatible TNC modem operating in high-speed Fast
 *   **Stateful KISS Decoder**: Full compliance with single-FEND and double-FEND framing standards for maximum compatibility with standard TNC hosts.
 *   **Robust Pi Bridge**: The host-side bridge features automatic serial reconnection loops and a 64KB read buffer to prevent Linux `EMSGSIZE` (message too long) kernel crash exceptions.
 *   **Offscreen Buffered Screen Graphics**: Utilizes LovyanGFX for SSD1306 OLED screen updating with 1-bit double-buffering to eliminate visual tearing and flickering.
+*   **Selective-Repeat ARQ**: Fragmented FLRC frames use bitmap ACKs and selective retransmission. ACK packets are padded to full radio length for FLRC reliability, and the receiver suppresses duplicate frame delivery while still re-ACKing recent retries.
 
 ---
 

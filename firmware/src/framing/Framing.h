@@ -106,7 +106,8 @@ inline void framingBuildAckPacket(Packet& pkt, const AckFrame& ack) {
     pkt.data[1] = static_cast<uint8_t>(((ack.total_frags - 1u) & 0x03u) << 6);
     pkt.data[1] |= static_cast<uint8_t>(ack.received_mask & 0x0Fu);
     pkt.data[2] = 0;
-    pkt.len     = FRAMING_ACK_HDR_LEN;
+    memset(pkt.data + FRAMING_ACK_HDR_LEN, 0, PACKET_MAX_LEN - FRAMING_ACK_HDR_LEN);
+    pkt.len     = PACKET_MAX_LEN;
 }
 
 inline void framingBuildDataPacket(Packet& pkt,
