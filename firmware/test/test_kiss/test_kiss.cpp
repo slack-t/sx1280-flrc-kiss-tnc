@@ -150,6 +150,43 @@ void test_empty_frame_ignored() {
     TEST_ASSERT_FALSE(c2);
 }
 
+// ── T1.8a: link-layer data header round-trips correctly ──────────────────────
+void test_link_data_packet_roundtrip() {
+    Packet pkt;
+    uint8_t payload[FRAMING_FRAG_DATA];
+    for (uint8_t i = 0; i < FRAMING_FRAG_DATA; i++) {
+        payload[i] = static_cast<uint8_t>(i);
+    }
+
+    framingBuildDataPacket(pkt, 7, 2, 4, true, payload, 31);
+
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(LinkPacketType::DATA),
+                            static_cast<uint8_t>(framingPacketType(pkt)));
+    TEST_ASSERT_EQUAL_UINT8(7, framingPacketSeq(pkt));
+    TEST_ASSERT_EQUAL_UINT8(2, framingFragmentIndex(pkt));
+    TEST_ASSERT_EQUAL_UINT8(4, framingTotalFrags(pkt));
+    TEST_ASSERT_TRUE(framingIsRoundEnd(pkt));
+    TEST_ASSERT_EQUAL_UINT8(31, framingPayloadLen(pkt));
+    TEST_ASSERT_EQUAL_MEMORY(payload, pkt.data + FRAMING_DATA_HDR_LEN, 31);
+}
+
+// ── T1.8b: ACK packets preserve frame sequence and bitmap ────────────────────
+void test_link_ack_packet_roundtrip() {
+    Packet pkt;
+    AckFrame ack;
+    ack.seq           = 9;
+    ack.total_frags   = 4;
+    ack.received_mask = 0x0B;
+
+    framingBuildAckPacket(pkt, ack);
+
+    AckFrame decoded;
+    TEST_ASSERT_TRUE(framingParseAck(pkt, decoded));
+    TEST_ASSERT_EQUAL_UINT8(ack.seq, decoded.seq);
+    TEST_ASSERT_EQUAL_UINT8(ack.total_frags, decoded.total_frags);
+    TEST_ASSERT_EQUAL_UINT8(ack.received_mask, decoded.received_mask);
+}
+
 // ── T1.8: back-to-back frames with single shared FEND separator ───────────────
 void test_back_to_back_single_fend() {
     IpFrame a, b;
@@ -217,6 +254,8 @@ int main(int argc, char** argv) {
     RUN_TEST(test_oversized_frame_no_overflow);
     RUN_TEST(test_non_zero_port_dropped);
     RUN_TEST(test_empty_frame_ignored);
+    RUN_TEST(test_link_data_packet_roundtrip);
+    RUN_TEST(test_link_ack_packet_roundtrip);
     RUN_TEST(test_back_to_back_single_fend);
     RUN_TEST(test_large_frame_roundtrip);
     return UNITY_END();

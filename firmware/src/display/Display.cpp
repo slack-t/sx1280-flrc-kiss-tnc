@@ -139,11 +139,11 @@ void Display::update(const Stats& s) {
     _sprite.print(buf);
 
     // --- Row 4 (Y = 51) ---
-    snprintf(buf, sizeof(buf), "SNR:%+.1f", s.snr);
+    snprintf(buf, sizeof(buf), "RTY:%lu", s.arqRetryCount);
     _sprite.setCursor(2, 51);
     _sprite.print(buf);
 
-    snprintf(buf, sizeof(buf), "P:%ddBm", TX_POWER_DBM);
+    snprintf(buf, sizeof(buf), "ATO:%lu", s.arqAckTimeoutCount);
     _sprite.setCursor(68, 51);
     _sprite.print(buf);
 

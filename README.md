@@ -141,7 +141,7 @@ sudo python3 pi-daemon/kiss_tun.py --port /dev/ttyACM0 --addr 10.0.0.2/30
 *   `--port`: Serial interface path (defaults to `/dev/ttyACM0`).
 *   `--addr`: Virtual IP allocation and subnet mask (e.g. `10.0.0.1/30`).
 *   `--name`: Linux interface name (defaults to `tun0`).
-*   `--mtu`: Network MTU size. Must match `PACKET_MAX_LEN` in `config.h` (defaults to **127**).
+*   `--mtu`: Network MTU size. Must match firmware `IP_MTU` (defaults to **496** with ARQ-enabled 3-byte fragment headers).
 
 ### 4. Testing the TCP/IP Link
 Once both bridge daemons are active, verify the point-to-point link:

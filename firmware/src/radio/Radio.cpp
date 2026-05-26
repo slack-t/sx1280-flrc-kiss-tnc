@@ -110,20 +110,16 @@ int16_t Radio::readPacket(Packet& pkt) {
     // turnaround time between consecutive fragments of the same IP frame.
     bool shouldQueryRssi = true;
     if (state == RADIOLIB_ERR_NONE && pkt.len > 0) {
-        const uint8_t header   = pkt.data[0];
-        const bool    is_split = (header & FRAMING_FLAG_SPLIT) != 0;
-        const bool    is_last  = (header & FRAMING_FLAG_LAST)  != 0;
-        if (is_split && !is_last) {
+        if (framingPacketType(pkt) == LinkPacketType::DATA &&
+            !framingIsRoundEnd(pkt)) {
             shouldQueryRssi = false;
         }
     }
 
     if (shouldQueryRssi) {
         _lastRssi = static_cast<int8_t>(_radio.getRSSI());
-        _lastSnr  = _radio.getSNR();
     }
     pkt.rssi = _lastRssi;
-    pkt.snr  = _lastSnr;
 
     // RX-to-RX: force full reset to prevent pay load lockout states
     _startReceiveNoLock(true);

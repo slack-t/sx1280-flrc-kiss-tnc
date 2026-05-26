@@ -12,12 +12,14 @@ enum class RadioState : uint8_t {
 
 struct Stats {
     int8_t   rssi        = 0;
-    float    snr         = 0.0f;
     uint32_t txCount     = 0;
     uint32_t rxCount     = 0;
     uint32_t errorCount  = 0;
     uint32_t txBytes     = 0;
     uint32_t rxBytes     = 0;
+    uint32_t arqRetryCount       = 0;
+    uint32_t arqAckTimeoutCount  = 0;
+    uint32_t arqReassemblyDrops  = 0;
     RadioState radioState = RadioState::IDLE;
     float    freqMHz     = 0.0f;
     uint32_t bitrateKbps = 0;

@@ -31,9 +31,6 @@ public:
     // Last received signal strength (dBm)
     int8_t lastRssi() const { return _lastRssi; }
 
-    // Last received SNR (dB)
-    float  lastSnr()  const { return _lastSnr; }
-
     // FreeRTOS semaphore given from the DIO1 ISR — radio task waits on this
     SemaphoreHandle_t rxSemaphore = nullptr;
 
@@ -47,7 +44,6 @@ private:
     SemaphoreHandle_t _spiMutex = nullptr;
 
     int8_t _lastRssi = 0;
-    float  _lastSnr  = 0.0f;
 
     // SPI call without taking _spiMutex — use only when the mutex is already held.
     // forceReset=true (after TX or error): clears IRQ state fully.

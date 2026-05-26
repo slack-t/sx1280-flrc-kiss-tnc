@@ -16,6 +16,72 @@ static Display display;
 
 static QueueHandle_t txQueue;   // IpFrame: SerialRX  → RadioTX
 static QueueHandle_t rxQueue;   // IpFrame: RadioRX   → SerialTX
+static QueueHandle_t ackQueue;  // AckFrame: RadioRX  → RadioTX
+
+static void noteRadioError() {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    sm.get().errorCount++;
+    sm.get().radioState = RadioState::ERROR;
+    sm.unlock();
+}
+
+static void finalizeReassembly(Reassembler& ra) {
+    IpFrame frame;
+    frame.len = 0;
+    for (uint8_t i = 0; i < ra.total_frags; i++) {
+        memcpy(frame.data + frame.len,
+               ra.buf + i * FRAMING_FRAG_DATA,
+               ra.frag_len[i]);
+        frame.len += ra.frag_len[i];
+    }
+    frame.rssi = ra.last_rssi;
+
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    sm.get().rxCount++;
+    sm.get().rxBytes   += frame.len;
+    sm.get().rssi       = frame.rssi;
+    sm.get().radioState = RadioState::RX;
+    sm.unlock();
+
+    if (xQueueSend(rxQueue, &frame, pdMS_TO_TICKS(RX_QUEUE_TIMEOUT_MS)) != pdPASS) {
+        noteRadioError();
+    }
+    ra.reset();
+}
+
+static void sendAckForReassembly(Reassembler& ra) {
+    if (ra.seq == FRAMING_SEQ_UNSET || ra.total_frags == 0 || !ra.ack_pending) {
+        return;
+    }
+
+    AckFrame ack;
+    ack.seq           = ra.seq;
+    ack.total_frags   = ra.total_frags;
+    ack.received_mask = ra.received_mask;
+
+    Packet pkt;
+    framingBuildAckPacket(pkt, ack);
+
+    int16_t err = radio.transmit(pkt, true);
+    if (err != RADIOLIB_ERR_NONE) {
+        noteRadioError();
+        return;
+    }
+
+    ra.ack_pending = false;
+    if (ra.isComplete()) {
+        finalizeReassembly(ra);
+    }
+}
+
+static void noteReassemblyDrop() {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    sm.get().arqReassemblyDrops++;
+    sm.unlock();
+}
 
 // ── Task: Radio RX ────────────────────────────────────────────────────────────
 // Receives radio packets, reassembles fragments into IP frames, pushes to rxQueue.
@@ -24,7 +90,38 @@ static void radioRxTask(void*) {
     static Reassembler ra;   // static: lives in BSS, not on the task stack
 
     for (;;) {
-        xSemaphoreTake(radio.rxSemaphore, portMAX_DELAY);
+        uint32_t wait_ms = 30000;
+        if (ra.seq != FRAMING_SEQ_UNSET) {
+            uint32_t idle_ms = millis() - ra.last_tick_ms;
+            if (ra.ack_pending) {
+                if (idle_ms >= RADIO_ACK_FALLBACK_DELAY_MS) {
+                    sendAckForReassembly(ra);
+                    continue;
+                }
+                wait_ms = RADIO_ACK_FALLBACK_DELAY_MS - idle_ms;
+            } else if (!ra.isComplete() && idle_ms >= RADIO_REASSEMBLY_TIMEOUT_MS) {
+                noteReassemblyDrop();
+                ra.reset();
+                continue;
+            } else if (!ra.isComplete()) {
+                wait_ms = RADIO_REASSEMBLY_TIMEOUT_MS - idle_ms;
+            }
+        }
+
+        BaseType_t got = xSemaphoreTake(radio.rxSemaphore, pdMS_TO_TICKS(wait_ms));
+        if (got == pdFALSE) {
+            if (ra.seq != FRAMING_SEQ_UNSET && ra.ack_pending) {
+                sendAckForReassembly(ra);
+                continue;
+            }
+            if (ra.seq != FRAMING_SEQ_UNSET && !ra.isComplete()) {
+                noteReassemblyDrop();
+                ra.reset();
+                continue;
+            }
+            radio.startReceive();
+            continue;
+        }
 
         int16_t err = radio.readPacket(pkt);
         if (err == ERR_SPURIOUS_IRQ) {
@@ -32,209 +129,183 @@ static void radioRxTask(void*) {
             continue;
         }
         if (err != RADIOLIB_ERR_NONE || pkt.len < 1) {
-            Serial.printf("[rx] genuine RX err: err=%d pkt.len=%d\n", err, pkt.len);
-            auto& sm = StatsManager::instance();
-            sm.lock();
-            sm.get().errorCount++;
-            sm.get().radioState = RadioState::ERROR;
-            sm.unlock();
+            noteRadioError();
             continue;
         }
 
-        const uint8_t header   = pkt.data[0];
-        const bool    is_split = (header & FRAMING_FLAG_SPLIT) != 0;
-
-        if (!is_split) {
-            // Single-packet frame: strip the 1-byte framing header, deliver.
-            IpFrame frame;
-            frame.len  = pkt.len - 1;
-            Serial.printf("[rx] single pkt_len=%d frame_len=%d rssi=%d\n",
-                          pkt.len, frame.len, pkt.rssi);
-            frame.rssi = pkt.rssi;
-            frame.snr  = pkt.snr;
-            memcpy(frame.data, pkt.data + 1, frame.len);
-
-            auto& sm = StatsManager::instance();
-            sm.lock();
-            sm.get().rxCount++;
-            sm.get().rxBytes   += frame.len;
-            sm.get().rssi       = frame.rssi;
-            sm.get().snr        = frame.snr;
-            sm.get().radioState = RadioState::RX;
-            sm.unlock();
-
-            if (xQueueSend(rxQueue, &frame, pdMS_TO_TICKS(RX_QUEUE_TIMEOUT_MS)) != pdPASS) {
-                Serial.printf("[rx] ERROR: rxQueue full, dropping single frame! len=%d\n", frame.len);
-                auto& sm = StatsManager::instance();
-                sm.lock();
-                sm.get().errorCount++;
-                sm.unlock();
+        if (framingPacketType(pkt) == LinkPacketType::ACK) {
+            AckFrame ack;
+            if (!framingParseAck(pkt, ack)) {
+                noteRadioError();
+                continue;
             }
-
-        } else {
-            // Fragmented frame — run reassembler.
-            const uint8_t seq     = header >> 4;
-            const uint8_t idx     = (header >> 2) & 0x03;
-            const bool    is_last = (header & FRAMING_FLAG_LAST) != 0;
-
-            // Discard stale partial reassembly after 500 ms silence.
-            if (ra.seq != FRAMING_SEQ_UNSET &&
-                (millis() - ra.last_tick_ms > 500)) {
-                Serial.printf("[rx] stale seq=%d mask=0x%02X discarded\n", ra.seq, ra.received_mask);
-                ra.reset();
+            if (xQueueSend(ackQueue, &ack, 0) != pdPASS) {
+                noteRadioError();
             }
+            continue;
+        }
 
-            // New sequence number: discard previous partial and start fresh.
-            if (ra.seq != seq) {
-                if (ra.seq != FRAMING_SEQ_UNSET) {
-                    Serial.printf("[rx] seq %d abandoned for new seq %d\n", ra.seq, seq);
-                }
-                ra.reset();
-                ra.seq = seq;
+        const uint8_t seq           = framingPacketSeq(pkt);
+        const uint8_t idx           = framingFragmentIndex(pkt);
+        const uint8_t total_frags   = framingTotalFrags(pkt);
+        const uint8_t frag_data_len = framingPayloadLen(pkt);
+        const bool    round_end     = framingIsRoundEnd(pkt);
+
+        if (total_frags == 0 || total_frags > FRAMING_MAX_FRAGS ||
+            idx >= total_frags || frag_data_len > FRAMING_FRAG_DATA) {
+            noteRadioError();
+            continue;
+        }
+
+        if (ra.seq != FRAMING_SEQ_UNSET &&
+            (millis() - ra.last_tick_ms > RADIO_REASSEMBLY_TIMEOUT_MS)) {
+            noteReassemblyDrop();
+            ra.reset();
+        }
+
+        if (ra.seq != seq) {
+            if (ra.seq != FRAMING_SEQ_UNSET) {
+                noteReassemblyDrop();
             }
+            ra.reset();
+            ra.seq         = seq;
+            ra.total_frags = total_frags;
+        } else if (ra.total_frags != total_frags) {
+            noteReassemblyDrop();
+            ra.reset();
+            ra.seq         = seq;
+            ra.total_frags = total_frags;
+        }
 
-            // Last fragment uses a 2-byte header (byte 1 = actual data length, rest is
-            // padding). Non-last fragments use the standard 1-byte header.
-            uint16_t       frag_data_len;
-            const uint8_t* frag_src;
-            if (is_last) {
-                frag_data_len = pkt.data[1];
-                frag_src      = pkt.data + 2;
-            } else {
-                frag_data_len = pkt.len - 1;
-                frag_src      = pkt.data + 1;
-            }
-            memcpy(ra.buf + idx * FRAMING_FRAG_DATA, frag_src, frag_data_len);
-            ra.frag_len[idx]   = frag_data_len;
-            ra.received_mask  |= static_cast<uint8_t>(1u << idx);
-            ra.frag_count++;
-            ra.last_tick_ms    = millis();
-            if (is_last) ra.total_frags = idx + 1;
+        memcpy(ra.buf + idx * FRAMING_FRAG_DATA, pkt.data + FRAMING_DATA_HDR_LEN, frag_data_len);
+        ra.frag_len[idx]   = frag_data_len;
+        ra.received_mask  |= static_cast<uint8_t>(1u << idx);
+        ra.last_tick_ms    = millis();
+        ra.last_rssi       = pkt.rssi;
+        ra.ack_pending     = true;
 
-            if (ra.isComplete()) {
-                IpFrame frame;
-                frame.len = 0;
-                for (uint8_t i = 0; i < ra.total_frags; i++) {
-                    memcpy(frame.data + frame.len,
-                           ra.buf + i * FRAMING_FRAG_DATA,
-                           ra.frag_len[i]);
-                    frame.len += ra.frag_len[i];
-                }
-
-                // Adopt final fragment's metrics directly (skipped on intermediate frags anyway)
-                frame.rssi = pkt.rssi;
-                frame.snr  = pkt.snr;
-
-                auto& sm = StatsManager::instance();
-                sm.lock();
-                sm.get().rxCount++;
-                sm.get().rxBytes   += frame.len;
-                sm.get().rssi       = frame.rssi;
-                sm.get().snr        = frame.snr;
-                sm.get().radioState = RadioState::RX;
-                sm.unlock();
-
-                Serial.printf("[rx] reassembled seq=%d len=%d rssi=%d\n", ra.seq, frame.len, frame.rssi);
-                if (xQueueSend(rxQueue, &frame, pdMS_TO_TICKS(RX_QUEUE_TIMEOUT_MS)) != pdPASS) {
-                    Serial.printf("[rx] ERROR: rxQueue full, dropping reassembled frame! len=%d\n", frame.len);
-                    auto& sm = StatsManager::instance();
-                    sm.lock();
-                    sm.get().errorCount++;
-                    sm.unlock();
-                }
-                ra.reset();
-            }
+        if (round_end) {
+            sendAckForReassembly(ra);
         }
     }
 }
 
 // ── Task: Radio TX ────────────────────────────────────────────────────────────
-// Dequeues IP frames, fragments into ≤126-byte radio packets, transmits each.
+// Dequeues IP frames, fragments into ≤124-byte radio packets, retransmits missing
+// fragments using selective-repeat ARQ until the receiver ACK bitmap is complete.
 static void radioTxTask(void*) {
     IpFrame frame;
-    Packet  pkt;
     static uint8_t seq = 0;
 
     for (;;) {
         xQueueReceive(txQueue, &frame, portMAX_DELAY);
 
+        xQueueReset(ackQueue);
         seq = (seq + 1) & 0x0F;
-        const bool    needs_split = (frame.len > FRAMING_FRAG_DATA);
-        const uint8_t total_frags = needs_split
-            ? static_cast<uint8_t>((frame.len + FRAMING_FRAG_DATA - 1) / FRAMING_FRAG_DATA)
-            : 1;
-        uint16_t      offset      = 0;
-        uint8_t       idx         = 0;
-
-        Serial.printf("[radio_tx] Sending frame: len=%d, seq=%d, frags=%d\n", frame.len, seq, total_frags);
+        const uint8_t total_frags = static_cast<uint8_t>(
+            (frame.len + FRAMING_FRAG_DATA - 1) / FRAMING_FRAG_DATA);
+        uint8_t pending_mask = framingExpectedMask(total_frags);
+        bool delivered = false;
 
         // LBT-CSMA: sense channel before the first fragment only.
-        // Inter-fragment timing stays deterministic (fixed 8 ms gap).
         for (int lbt = 0; radio.isChannelBusy(); lbt++) {
             if (lbt >= RADIO_LBT_MAX_RETRIES) break;
             uint32_t backoff_ms = RADIO_LBT_BACKOFF_MIN_MS +
                 (esp_random() % (RADIO_LBT_BACKOFF_MAX_MS - RADIO_LBT_BACKOFF_MIN_MS + 1));
-            Serial.printf("[radio_tx] LBT busy (attempt %d), backing off %lu ms\n", lbt + 1, backoff_ms);
             vTaskDelay(pdMS_TO_TICKS(backoff_ms));
         }
 
-        while (offset < frame.len) {
-            const uint16_t chunk   = (frame.len - offset < FRAMING_FRAG_DATA)
-                                     ? static_cast<uint16_t>(frame.len - offset)
-                                     : static_cast<uint16_t>(FRAMING_FRAG_DATA);
-            const bool     is_last = (offset + chunk >= frame.len);
-
-            uint8_t header = static_cast<uint8_t>(seq << 4);
-            if (needs_split) {
-                header |= FRAMING_FLAG_SPLIT;
-                header |= static_cast<uint8_t>(idx << 2);
-                if (is_last) header |= FRAMING_FLAG_LAST;
-            }
-
-            if (is_last && needs_split) {
-                // Last fragment: 2-byte header (byte 1 = actual data length) padded to
-                // PACKET_MAX_LEN. SX1280 FLRC at 325 kbps drops short packets; padding
-                // ensures the receiver always sees a full-size 127-byte radio frame.
-                pkt.data[0] = header;
-                pkt.data[1] = static_cast<uint8_t>(chunk);
-                memcpy(pkt.data + 2, frame.data + offset, chunk);
-                memset(pkt.data + 2 + chunk, 0, PACKET_MAX_LEN - 2 - chunk);
-                pkt.len = PACKET_MAX_LEN;
-            } else {
-                pkt.data[0] = header;
-                memcpy(pkt.data + 1, frame.data + offset, chunk);
-                pkt.len = static_cast<uint8_t>(chunk + 1);
-            }
-
-            // Inter-fragment gap: gives the remote receiver ample time to process
-            // the previous fragment, write it, and return to RX mode.
-            // Only apply a delay between fragments (when idx > 0).
-            if (idx > 0) {
-                delayMicroseconds(RADIO_INTER_FRAG_DELAY_US);
-            }
-
-            auto& sm = StatsManager::instance();
-            sm.lock();
-            sm.get().radioState = RadioState::TX;
-            sm.unlock();
-
-            int16_t err = radio.transmit(pkt, is_last);
-
-            sm.lock();
-            if (err == RADIOLIB_ERR_NONE) {
-                if (is_last) {
-                    sm.get().txCount++;
-                    sm.get().txBytes += frame.len;
+        for (uint8_t round = 0; round < RADIO_ARQ_MAX_ROUNDS && pending_mask != 0; round++) {
+            uint8_t sent_mask = 0;
+            for (uint8_t idx = 0; idx < total_frags; idx++) {
+                const uint8_t bit = static_cast<uint8_t>(1u << idx);
+                if ((pending_mask & bit) == 0) {
+                    continue;
                 }
-            } else {
-                Serial.printf("[tx] frag %d/%d err=%d\n", idx + 1, total_frags, err);
-                sm.get().errorCount++;
-            }
-            sm.get().radioState = RadioState::IDLE;
-            sm.unlock();
 
-            offset += chunk;
-            idx++;
+                const uint16_t offset = static_cast<uint16_t>(idx) * FRAMING_FRAG_DATA;
+                const uint8_t chunk = static_cast<uint8_t>(
+                    (frame.len - offset < FRAMING_FRAG_DATA)
+                        ? (frame.len - offset)
+                        : FRAMING_FRAG_DATA);
+                const uint8_t later_pending =
+                    static_cast<uint8_t>(pending_mask & ~static_cast<uint8_t>((1u << (idx + 1)) - 1u));
+                const bool round_end = later_pending == 0;
+
+                if (sent_mask != 0) {
+                    vTaskDelay(pdMS_TO_TICKS(RADIO_INTER_FRAG_DELAY_MS));
+                }
+
+                Packet pkt;
+                framingBuildDataPacket(pkt, seq, idx, total_frags, round_end,
+                                       frame.data + offset, chunk);
+
+                auto& sm = StatsManager::instance();
+                sm.lock();
+                sm.get().radioState = RadioState::TX;
+                if (round > 0) {
+                    sm.get().arqRetryCount++;
+                }
+                sm.unlock();
+
+                int16_t err = radio.transmit(pkt, round_end);
+
+                sm.lock();
+                sm.get().radioState = RadioState::IDLE;
+                if (err != RADIOLIB_ERR_NONE) {
+                    sm.get().errorCount++;
+                }
+                sm.unlock();
+
+                if (err == RADIOLIB_ERR_NONE) {
+                    sent_mask |= bit;
+                }
+            }
+
+            if (sent_mask == 0) {
+                continue;
+            }
+
+            AckFrame ack;
+            bool got_ack = false;
+            const uint32_t ack_deadline = millis() + RADIO_ACK_TIMEOUT_MS;
+            while (millis() < ack_deadline) {
+                uint32_t now = millis();
+                if (now >= ack_deadline) {
+                    break;
+                }
+                TickType_t wait_ticks = pdMS_TO_TICKS(ack_deadline - now);
+                if (xQueueReceive(ackQueue, &ack, wait_ticks) != pdPASS) {
+                    break;
+                }
+                if (ack.seq != seq || ack.total_frags != total_frags) {
+                    continue;
+                }
+                pending_mask &= static_cast<uint8_t>(~ack.received_mask);
+                got_ack = true;
+                break;
+            }
+
+            if (!got_ack) {
+                auto& sm = StatsManager::instance();
+                sm.lock();
+                sm.get().arqAckTimeoutCount++;
+                sm.unlock();
+            }
+
+            if (pending_mask == 0) {
+                auto& sm = StatsManager::instance();
+                sm.lock();
+                sm.get().txCount++;
+                sm.get().txBytes += frame.len;
+                sm.unlock();
+                delivered = true;
+                break;
+            }
+        }
+
+        if (!delivered) {
+            noteRadioError();
         }
     }
 }
@@ -285,10 +356,7 @@ static void serialTxTask(void*) {
         xQueueReceive(rxQueue, &frame, portMAX_DELAY);
         size_t encLen = Kiss::encode(frame, encBuf, sizeof(encBuf));
         size_t written = Serial.write(encBuf, encLen);
-        if (written != encLen) {
-            Serial.printf("[serial_tx] WARN: partial write %u/%u — frame truncated, Pi will discard\n",
-                          written, encLen);
-        }
+        (void)written;
     }
 }
 
@@ -361,7 +429,8 @@ void setup() {
     Serial.println("[main] Creating FreeRTOS communication queues...");
     txQueue = xQueueCreate(TX_QUEUE_DEPTH, sizeof(IpFrame));
     rxQueue = xQueueCreate(RX_QUEUE_DEPTH, sizeof(IpFrame));
-    if (txQueue == nullptr || rxQueue == nullptr) {
+    ackQueue = xQueueCreate(8, sizeof(AckFrame));
+    if (txQueue == nullptr || rxQueue == nullptr || ackQueue == nullptr) {
         Serial.println("[main] CRITICAL: Failed to create FreeRTOS queues!");
         display.showError("Queue Create Fail", -99);
         while (true) { delay(1000); }
@@ -389,6 +458,8 @@ void setup() {
 
     Serial.printf("[main] IP MTU: %u bytes (%u fragments x %u bytes)\n",
                   IP_MTU, FRAMING_MAX_FRAGS, FRAMING_FRAG_DATA);
+    Serial.printf("[main] ARQ: %u rounds, ACK timeout %u ms, fallback ACK %u ms\n",
+                  RADIO_ARQ_MAX_ROUNDS, RADIO_ACK_TIMEOUT_MS, RADIO_ACK_FALLBACK_DELAY_MS);
     Serial.println("[main] System initialization complete. KISS TNC operational.");
 }
 

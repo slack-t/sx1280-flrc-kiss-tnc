@@ -22,7 +22,7 @@ struct Args {
     #[arg(long)]
     addr: String,
 
-    #[arg(long, default_value_t = 500)]
+    #[arg(long, default_value_t = 496)]
     mtu: u16,
 
     #[arg(long, default_value = "tun0")]

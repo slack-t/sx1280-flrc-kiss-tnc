@@ -56,7 +56,7 @@
 
 // ── Packet / buffer limits ───────────────────────────────────────────────────
 // SX1280 FLRC maximum payload = 127 bytes.
-// The tun0 MTU on the Pi side must match this value.
+// Fragmented packets use a 3-byte link header, so the host MTU must match IP_MTU.
 #define PACKET_MAX_LEN          127
 
 // ── FreeRTOS queue depths ────────────────────────────────────────────────────
@@ -64,8 +64,14 @@
 #define RX_QUEUE_DEPTH          8
 
 // ── Timing and Queue Buffering Parameters ────────────────────────────────────
-#define RADIO_INTER_FRAG_DELAY_US    8000  // 8 ms gap between consecutive fragments
+// Gap between consecutive fragments.  vTaskDelay(pdMS_TO_TICKS(N)) is used so
+// Core 1 yields during the gap — delayMicroseconds() would busy-spin and starve radioRxTask.
+#define RADIO_INTER_FRAG_DELAY_MS    8     // ms gap between consecutive fragments
 #define RX_QUEUE_TIMEOUT_MS          50    // Prevent radio RX deadlock if host is blocked
+#define RADIO_ARQ_MAX_ROUNDS         6     // Initial TX + selective retransmit rounds
+#define RADIO_ACK_TIMEOUT_MS         80    // Sender waits this long for a bitmap ACK
+#define RADIO_ACK_FALLBACK_DELAY_MS  45    // Receiver waits this long before ACKing if END was lost
+#define RADIO_REASSEMBLY_TIMEOUT_MS  500   // Drop stale partial frames after silence
 
 
 // ── Task stack sizes (bytes) ─────────────────────────────────────────────────
@@ -98,4 +104,3 @@
 
 // ── Display refresh interval (ms) ────────────────────────────────────────────
 #define DISPLAY_REFRESH_MS      500
-
