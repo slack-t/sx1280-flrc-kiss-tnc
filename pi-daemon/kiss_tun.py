@@ -23,11 +23,6 @@ import time
 import errno
 import serial
 
-try:
-    import pytun
-except ImportError:
-    sys.exit("python-pytun not found — run: pip install python-pytun")
-
 # ── KISS constants ────────────────────────────────────────────────────────────
 FEND  = 0xC0
 FESC  = 0xDB
@@ -258,6 +253,11 @@ def run_bridge(tun, ser, mtu: int, debug_ip: bool) -> threading.Event:
 
 
 def main():
+    try:
+        import pytun
+    except ImportError:
+        sys.exit("python-pytun not found — run: pip install python-pytun")
+
     parser = argparse.ArgumentParser(description="KISS TNC ↔ tun0 bridge for SX1280 FLRC TNC")
     parser.add_argument("--port",  default="/dev/ttyACM0",
                         help="Serial port (default: /dev/ttyACM0)")
