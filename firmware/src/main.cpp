@@ -12,6 +12,14 @@
 
 // Set to 1 to log decoded KISS frame length and first 8 bytes on serial RX
 #define DEBUG_KISS_SERIAL_RX 0
+// Set to 1 to log ARQ RX/TX diagnostics on the serial console
+#define DEBUG_ARQ_DIAGNOSTICS 0
+
+#if DEBUG_ARQ_DIAGNOSTICS
+#define ARQ_LOG(...) Serial.printf(__VA_ARGS__)
+#else
+#define ARQ_LOG(...) ((void)0)
+#endif
 
 // ── Globals ───────────────────────────────────────────────────────────────────
 static Radio   radio;
@@ -88,8 +96,8 @@ static void finalizeReassembly(Reassembler& ra, CompletedFrameCache& completed) 
     IpFrame frame;
     frame.len = 0;
     for (uint8_t i = 0; i < ra.total_frags; i++) {
-        Serial.printf("[ARQ RX:ASSEMBLE seq=%04x i=%u flen=%u]\n",
-                      ra.seq, i, ra.frag_len[i]);
+        ARQ_LOG("[ARQ RX:ASSEMBLE seq=%04x i=%u flen=%u]\n",
+                ra.seq, i, ra.frag_len[i]);
         memcpy(frame.data + frame.len,
                ra.buf + i * FRAMING_FRAG_DATA,
                ra.frag_len[i]);
@@ -98,8 +106,8 @@ static void finalizeReassembly(Reassembler& ra, CompletedFrameCache& completed) 
     frame.rssi = ra.last_rssi;
 
     if (!ipv4FrameLooksComplete(frame)) {
-        Serial.printf("[ARQ RX:FAIL seq=%04x tot=%u mask=%02x reason=ipv4_check len=%u]\n",
-                      ra.seq, ra.total_frags, ra.received_mask, frame.len);
+        ARQ_LOG("[ARQ RX:FAIL seq=%04x tot=%u mask=%02x reason=ipv4_check len=%u]\n",
+                ra.seq, ra.total_frags, ra.received_mask, frame.len);
         noteRadioError();
         ra.reset();
         return;
@@ -118,8 +126,8 @@ static void finalizeReassembly(Reassembler& ra, CompletedFrameCache& completed) 
         noteQueueDrop();
         noteRadioError();
     }
-    Serial.printf("[ARQ RX:DONE seq=%04x tot=%u mask=%02x len=%u]\n",
-                  ra.seq, ra.total_frags, ra.received_mask, frame.len);
+    ARQ_LOG("[ARQ RX:DONE seq=%04x tot=%u mask=%02x len=%u]\n",
+            ra.seq, ra.total_frags, ra.received_mask, frame.len);
     completed.seq         = ra.seq;
     completed.total_frags = ra.total_frags;
     completed.ack_mask    = ra.received_mask;
@@ -137,8 +145,8 @@ static void sendAckForReassembly(Reassembler& ra) {
     ack.total_frags   = ra.total_frags;
     ack.received_mask = ra.received_mask;
 
-    Serial.printf("[ARQ RX:ACK seq=%04x tot=%u mask=%02x complete=%d]\n",
-                  ra.seq, ra.total_frags, ra.received_mask, (int)ra.isComplete());
+    ARQ_LOG("[ARQ RX:ACK seq=%04x tot=%u mask=%02x complete=%d]\n",
+            ra.seq, ra.total_frags, ra.received_mask, (int)ra.isComplete());
 
     Packet pkt;
     framingBuildAckPacket(pkt, ack);
@@ -208,8 +216,8 @@ static void radioRxTask(void*) {
                 continue;
             }
             if (ra.seq != FRAMING_SEQ_UNSET && !ra.isComplete()) {
-                Serial.printf("[ARQ RX:DROP seq=%04x tot=%u mask=%02x reason=idle]\n",
-                              ra.seq, ra.total_frags, ra.received_mask);
+                ARQ_LOG("[ARQ RX:DROP seq=%04x tot=%u mask=%02x reason=idle]\n",
+                        ra.seq, ra.total_frags, ra.received_mask);
                 noteReassemblyDrop();
                 ra.reset();
                 continue;
@@ -261,8 +269,8 @@ static void radioRxTask(void*) {
         if (completed.seq == seq &&
             completed.total_frags == total_frags &&
             (now_ms - completed.tick_ms) <= RADIO_DUP_CACHE_MS) {
-            Serial.printf("[ARQ RX:DUP seq=%04x tot=%u mask=%02x]\n",
-                          seq, total_frags, completed.ack_mask);
+            ARQ_LOG("[ARQ RX:DUP seq=%04x tot=%u mask=%02x]\n",
+                    seq, total_frags, completed.ack_mask);
             // Re-ACK without re-delivering. Use AckFrame + Packet directly to
             // avoid a large Reassembler on the task stack.
             AckFrame dupAck;
@@ -287,8 +295,8 @@ static void radioRxTask(void*) {
 
         if (ra.seq != FRAMING_SEQ_UNSET &&
             (now_ms - ra.last_tick_ms > reassemblyTimeoutMs(ra.total_frags))) {
-            Serial.printf("[ARQ RX:DROP seq=%04x tot=%u mask=%02x reason=timeout]\n",
-                          ra.seq, ra.total_frags, ra.received_mask);
+            ARQ_LOG("[ARQ RX:DROP seq=%04x tot=%u mask=%02x reason=timeout]\n",
+                    ra.seq, ra.total_frags, ra.received_mask);
             noteReassemblyDrop();
             ra.reset();
         }
@@ -322,9 +330,9 @@ static void radioRxTask(void*) {
             ra.ack_due_ms     = now_ms + ackFallbackDelayMs(total_frags);
         }
 
-        Serial.printf("[ARQ RX:FRAG seq=%04x tot=%u idx=%u new=%d re=%d mask=%02x flen=%u]\n",
-                      seq, total_frags, idx, (int)is_new_frag, (int)round_end,
-                      ra.received_mask, frag_data_len);
+        ARQ_LOG("[ARQ RX:FRAG seq=%04x tot=%u idx=%u new=%d re=%d mask=%02x flen=%u]\n",
+                seq, total_frags, idx, (int)is_new_frag, (int)round_end,
+                ra.received_mask, frag_data_len);
 
         if (round_end) {
             // Sender signals end of its TX burst. Schedule a short turnaround
@@ -362,8 +370,8 @@ static void radioTxTask(void*) {
         sm.get().arqFramesStarted++;
         sm.unlock();
 
-        Serial.printf("[ARQ TX:START seq=%04x tot=%u len=%u]\n",
-                      seq, total_frags, frame.len);
+        ARQ_LOG("[ARQ TX:START seq=%04x tot=%u len=%u]\n",
+                seq, total_frags, frame.len);
 
         // LBT-CSMA: sense channel before the first fragment only.
         for (int lbt = 0; radio.isChannelBusy(); lbt++) {
@@ -374,8 +382,8 @@ static void radioTxTask(void*) {
         }
 
         for (uint8_t round = 0; round < RADIO_ARQ_MAX_ROUNDS && pending_mask != 0; round++) {
-            Serial.printf("[ARQ TX:ROUND seq=%04x tot=%u round=%u pending=%02x]\n",
-                          seq, total_frags, round, pending_mask);
+            ARQ_LOG("[ARQ TX:ROUND seq=%04x tot=%u round=%u pending=%02x]\n",
+                    seq, total_frags, round, pending_mask);
             uint8_t sent_mask = 0;
             for (uint8_t idx = 0; idx < total_frags; idx++) {
                 const uint8_t bit = static_cast<uint8_t>(1u << idx);
@@ -440,9 +448,9 @@ static void radioTxTask(void*) {
                 if (ack.seq != seq || ack.total_frags != total_frags) {
                     continue;
                 }
-                Serial.printf("[ARQ TX:ACK seq=%04x tot=%u ack_mask=%02x pend=%02x->%02x]\n",
-                              seq, total_frags, ack.received_mask, pending_mask,
-                              static_cast<uint8_t>(pending_mask & ~ack.received_mask));
+                ARQ_LOG("[ARQ TX:ACK seq=%04x tot=%u ack_mask=%02x pend=%02x->%02x]\n",
+                        seq, total_frags, ack.received_mask, pending_mask,
+                        static_cast<uint8_t>(pending_mask & ~ack.received_mask));
                 pending_mask &= static_cast<uint8_t>(~ack.received_mask);
                 got_ack = true;
                 break;
@@ -453,8 +461,8 @@ static void radioTxTask(void*) {
                 sm.lock();
                 sm.get().arqAckTimeoutCount++;
                 sm.unlock();
-                Serial.printf("[ARQ TX:TIMEOUT seq=%04x tot=%u round=%u pending=%02x]\n",
-                              seq, total_frags, round, pending_mask);
+                ARQ_LOG("[ARQ TX:TIMEOUT seq=%04x tot=%u round=%u pending=%02x]\n",
+                        seq, total_frags, round, pending_mask);
             }
 
             if (pending_mask == 0) {
@@ -464,8 +472,8 @@ static void radioTxTask(void*) {
                 sm.get().txBytes += frame.len;
                 sm.unlock();
                 delivered = true;
-                Serial.printf("[ARQ TX:DONE seq=%04x tot=%u rounds=%u]\n",
-                              seq, total_frags, round + 1);
+                ARQ_LOG("[ARQ TX:DONE seq=%04x tot=%u rounds=%u]\n",
+                        seq, total_frags, round + 1);
                 break;
             }
         }
@@ -475,8 +483,8 @@ static void radioTxTask(void*) {
             sm.lock();
             sm.get().arqFramesFailed++;
             sm.unlock();
-            Serial.printf("[ARQ TX:FAIL seq=%04x tot=%u pending=%02x]\n",
-                          seq, total_frags, pending_mask);
+            ARQ_LOG("[ARQ TX:FAIL seq=%04x tot=%u pending=%02x]\n",
+                    seq, total_frags, pending_mask);
             noteRadioError();
         }
     }
