@@ -280,4 +280,45 @@ mod tests {
         assert_eq!(decoded.len(), 369, "369-byte frame truncated to {}", decoded.len());
         assert_eq!(decoded, payload);
     }
+
+    #[test]
+    fn test_369_byte_frame_after_noise_prefix() {
+        let payload: Vec<u8> = (0..369u16).map(|i| (i & 0xFF) as u8).collect();
+        let mut encoded = Vec::new();
+        kiss_encode(&payload, &mut encoded);
+
+        let mut decoder = KissDecoder::new(512);
+        let mut decoded = Vec::new();
+        let mut complete = false;
+
+        let noise_prefix = vec![
+            0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A,
+            0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32,
+        ];
+        for b in noise_prefix {
+            assert!(!decoder.feed(b, &mut decoded));
+        }
+
+        let chunk_sizes = [1usize, 7, 19, 3, 64, 11, 5, 128, 17, 256];
+        let mut offset = 0usize;
+        let mut chunk_idx = 0usize;
+        while offset < encoded.len() && !complete {
+            let mut chunk = chunk_sizes[chunk_idx % chunk_sizes.len()];
+            if chunk > encoded.len() - offset {
+                chunk = encoded.len() - offset;
+            }
+            for &b in &encoded[offset..offset + chunk] {
+                if decoder.feed(b, &mut decoded) {
+                    complete = true;
+                    break;
+                }
+            }
+            offset += chunk;
+            chunk_idx += 1;
+        }
+
+        assert!(complete, "369-byte frame after noise not completed");
+        assert_eq!(decoded.len(), 369, "369-byte frame after noise truncated to {}", decoded.len());
+        assert_eq!(decoded, payload);
+    }
 }

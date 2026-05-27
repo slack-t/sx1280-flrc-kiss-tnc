@@ -329,6 +329,54 @@ void test_369_byte_regression_reproducer() {
     TEST_ASSERT_EQUAL_MEMORY(original.data, decoded.data, original.len);
 }
 
+// ── T1.14: captured-noise prefix cannot truncate following 369-byte frame ────
+void test_369_byte_frame_after_noise_prefix() {
+    IpFrame original;
+    original.len = 369;
+    for (uint16_t i = 0; i < original.len; i++) {
+        original.data[i] = static_cast<uint8_t>(i & 0xFF);
+    }
+
+    uint8_t encBuf[IP_MTU * 2 + 3];
+    size_t encLen = Kiss::encode(original, encBuf, sizeof(encBuf));
+
+    Kiss decoder;
+    IpFrame decoded;
+    bool complete = false;
+
+    // Feed a prefix that previously confused host-side logging and could expose
+    // decoder boundary bugs before the actual framed payload begins.
+    const uint8_t noise_prefix[] = {
+        0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A,
+        0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32
+    };
+    for (uint8_t b : noise_prefix) {
+        TEST_ASSERT_FALSE(decoder.decode(b, decoded));
+    }
+
+    // Deliver the valid frame in irregular chunks to exercise boundary handling.
+    const size_t chunk_sizes[] = { 1, 7, 19, 3, 64, 11, 5, 128, 17, 256 };
+    size_t offset = 0;
+    size_t chunk_idx = 0;
+    while (offset < encLen && !complete) {
+        size_t chunk = chunk_sizes[chunk_idx % (sizeof(chunk_sizes) / sizeof(chunk_sizes[0]))];
+        if (chunk > encLen - offset) {
+            chunk = encLen - offset;
+        }
+        for (size_t i = 0; i < chunk && !complete; i++) {
+            if (decoder.decode(encBuf[offset + i], decoded)) {
+                complete = true;
+            }
+        }
+        offset += chunk;
+        chunk_idx++;
+    }
+
+    TEST_ASSERT_TRUE_MESSAGE(complete, "369-byte frame after noise not completed");
+    TEST_ASSERT_EQUAL_UINT16_MESSAGE(369, decoded.len, "369-byte frame after noise truncated");
+    TEST_ASSERT_EQUAL_MEMORY(original.data, decoded.data, original.len);
+}
+
 // ── T1.9: large frame (IP_MTU bytes) round-trips through KISS encode/decode ──
 void test_large_frame_roundtrip() {
     IpFrame original;
@@ -372,5 +420,6 @@ int main(int argc, char** argv) {
     RUN_TEST(test_non_zero_port_then_valid_frame_resyncs_cleanly);
     RUN_TEST(test_oversized_frame_then_valid_frame_resyncs_cleanly);
     RUN_TEST(test_369_byte_regression_reproducer);
+    RUN_TEST(test_369_byte_frame_after_noise_prefix);
     return UNITY_END();
 }

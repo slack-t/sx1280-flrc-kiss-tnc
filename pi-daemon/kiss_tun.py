@@ -122,28 +122,15 @@ class KissDecoder:
         self._state    = _KissState.IDLE
         self._buf: bytearray = bytearray()
         self._overflow = False
-        self._log_buf: bytearray = bytearray()  # collects out-of-frame ESP32 text
 
     def feed(self, data: bytes):
-        """Yield (port, payload) for KISS data frames, or ('log', line) for ESP32 text."""
+        """Yield (port, payload) for KISS data frames."""
         for b in data:
             if self._state == _KissState.IDLE:
                 if b == FEND:
-                    if self._log_buf:
-                        line = self._log_buf.decode('ascii', errors='replace').rstrip('\r')
-                        if line:
-                            yield ('log', line + ' ~trunc')
-                        self._log_buf.clear()
                     self._buf.clear()
                     self._overflow = False
                     self._state    = _KissState.IN_FRAME
-                elif b == ord('\n'):
-                    line = self._log_buf.decode('ascii', errors='replace').rstrip('\r')
-                    if line:
-                        yield ('log', line)
-                    self._log_buf.clear()
-                elif b != ord('\r'):
-                    self._log_buf.append(b)
 
             elif self._state == _KissState.IN_FRAME:
                 if b == FEND:
@@ -227,9 +214,6 @@ def radio_to_tun(tun, ser, stop_event: threading.Event, debug_ip: bool):
             if waiting:
                 data = ser.read(waiting)
                 for port, payload in decoder.feed(data):
-                    if port == 'log':
-                        print(f"[esp32] {payload}", flush=True)
-                        continue
                     if port == KISS_DATA_PORT and payload:
                         try:
                             print(f"[kiss_tun] radio → tun0: injecting {len(payload)} bytes", flush=True)
