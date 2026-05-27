@@ -104,82 +104,95 @@ def describe_ipv4_packet(pkt: bytes) -> str:
     return summary
 
 
-def log_packet(direction: Direction, pkt: bytes) -> None:
-    print(f"[kiss_tun] {direction.value}: {describe_ipv4_packet(pkt)}", flush=True)
+def log_packet(direction: Direction, pkt: bytes, debug_ip: bool) -> None:
+    if debug_ip:
+        print(f"[kiss_tun] {direction.value}: {describe_ipv4_packet(pkt)}", flush=True)
+
+
+class _KissState:
+    IDLE     = 0
+    IN_FRAME = 1
+    ESCAPE   = 2
 
 
 class KissDecoder:
     """Stateful byte-stream KISS decoder."""
 
     def __init__(self):
+        self._state    = _KissState.IDLE
         self._buf: bytearray = bytearray()
-        self._in_frame = False
-        self._escape   = False
         self._overflow = False
-        self._log_buf: bytearray = bytearray()  # out-of-frame bytes (ESP32 debug output)
+        self._log_buf: bytearray = bytearray()  # collects out-of-frame ESP32 text
 
     def feed(self, data: bytes):
-        """Yield (port, payload) for KISS data frames, or (-1, line) for ESP32 log lines."""
+        """Yield (port, payload) for KISS data frames, or ('log', line) for ESP32 text."""
         for b in data:
-            if not self._in_frame:
+            if self._state == _KissState.IDLE:
                 if b == FEND:
-                    yield from self._drain_log()
-                    self._in_frame = True
+                    if self._log_buf:
+                        line = self._log_buf.decode('ascii', errors='replace').rstrip('\r')
+                        if line:
+                            yield ('log', line + ' ~trunc')
+                        self._log_buf.clear()
                     self._buf.clear()
-                    self._escape   = False
                     self._overflow = False
-                else:
+                    self._state    = _KissState.IN_FRAME
+                elif b == ord('\n'):
+                    line = self._log_buf.decode('ascii', errors='replace').rstrip('\r')
+                    if line:
+                        yield ('log', line)
+                    self._log_buf.clear()
+                elif b != ord('\r'):
                     self._log_buf.append(b)
-                    if b == 0x0A or len(self._log_buf) >= 256:  # newline or buffer full
-                        yield from self._drain_log()
-            else:
+
+            elif self._state == _KissState.IN_FRAME:
                 if b == FEND:
-                    if not self._overflow and len(self._buf) > 1:
-                        port    = self._buf[0]
+                    if len(self._buf) == 0:
+                        # Empty delimiter: fresh start, no frame emitted.
+                        self._overflow = False
+                    elif self._overflow:
+                        # Oversized frame: discard and start fresh candidate.
+                        self._buf.clear()
+                        self._overflow = False
+                    elif self._buf[0] != KISS_DATA_PORT:
+                        # Non-data port: discard silently.
+                        self._buf.clear()
+                        self._overflow = False
+                    else:
+                        # Valid data frame: emit payload (strip port byte).
                         payload = bytes(self._buf[1:])
-                        if port == KISS_DATA_PORT:
-                            yield (port, payload)
-                        else:
-                            # Non-zero port: bytes accumulated between KISS frames.
-                            # The ESP32 debug output lands here as plain ASCII text.
-                            yield from self._decode_as_log(bytes([port]) + payload)
-                    # Trailing FEND stays in IN_FRAME — acts as leading FEND of
-                    # the next frame for single-FEND back-to-back streams.
-                    self._buf.clear()
-                    self._escape   = False
-                    self._overflow = False
+                        self._buf.clear()
+                        self._overflow = False
+                        yield (KISS_DATA_PORT, payload)
+                    # Trailing FEND closes this frame and opens the next candidate.
+                    # _state stays IN_FRAME.
                 elif b == FESC:
-                    self._escape = True
+                    self._state = _KissState.ESCAPE
                 else:
-                    if self._escape:
-                        self._escape = False
-                        if b == TFEND:
-                            b = FEND
-                        elif b == TFESC:
-                            b = FESC
                     if len(self._buf) < DEFAULT_MTU + 1:
                         self._buf.append(b)
                     else:
                         self._overflow = True
 
-    def _drain_log(self):
-        if self._log_buf:
-            yield from self._decode_as_log(bytes(self._log_buf))
-            self._log_buf.clear()
+            else:  # ESCAPE
+                if b == FEND:
+                    # FEND while in escape: invalid sequence, discard partial frame.
+                    self._buf.clear()
+                    self._overflow = False
+                    self._state    = _KissState.IN_FRAME
+                else:
+                    if b == TFEND:
+                        b = FEND
+                    elif b == TFESC:
+                        b = FESC
+                    if len(self._buf) < DEFAULT_MTU + 1:
+                        self._buf.append(b)
+                    else:
+                        self._overflow = True
+                    self._state = _KissState.IN_FRAME
 
-    @staticmethod
-    def _decode_as_log(raw: bytes):
-        try:
-            text = raw.decode('ascii')
-        except UnicodeDecodeError:
-            return  # binary garbage between frames, discard silently
-        for line in text.splitlines():
-            line = line.strip()
-            if line:
-                yield (-1, line.encode())
 
-
-def tun_to_radio(tun, ser, mtu: int, stop_event: threading.Event):
+def tun_to_radio(tun, ser, mtu: int, stop_event: threading.Event, debug_ip: bool):
     """Read IP packets from tun0 and send as KISS frames over serial."""
     while not stop_event.is_set():
         try:
@@ -195,7 +208,7 @@ def tun_to_radio(tun, ser, mtu: int, stop_event: threading.Event):
                       flush=True)
                 continue
             print(f"[kiss_tun] tun0 → radio: sending {len(pkt)} bytes", flush=True)
-            log_packet(Direction.TUN_TO_RADIO, pkt)
+            log_packet(Direction.TUN_TO_RADIO, pkt, debug_ip)
             ser.write(kiss_encode(pkt))
             # Pacing: A small 5ms delay prevents the host from flooding the USB CDC
             # buffers and the TNC board's internal queue during high-throughput benchmarks.
@@ -205,7 +218,7 @@ def tun_to_radio(tun, ser, mtu: int, stop_event: threading.Event):
             stop_event.set()
 
 
-def radio_to_tun(tun, ser, stop_event: threading.Event):
+def radio_to_tun(tun, ser, stop_event: threading.Event, debug_ip: bool):
     """Read KISS frames from serial and inject IP packets into tun0."""
     decoder = KissDecoder()
     while not stop_event.is_set():
@@ -214,18 +227,19 @@ def radio_to_tun(tun, ser, stop_event: threading.Event):
             if waiting:
                 data = ser.read(waiting)
                 for port, payload in decoder.feed(data):
+                    if port == 'log':
+                        print(f"[esp32] {payload}", flush=True)
+                        continue
                     if port == KISS_DATA_PORT and payload:
                         try:
                             print(f"[kiss_tun] radio → tun0: injecting {len(payload)} bytes", flush=True)
-                            log_packet(Direction.RADIO_TO_TUN, payload)
+                            log_packet(Direction.RADIO_TO_TUN, payload, debug_ip)
                             os.write(tun.fileno(), payload)
                         except OSError as e:
                             if e.errno == errno.EINVAL:
                                 print(f"[kiss_tun] radio→tun: dropped invalid IP packet (len={len(payload)})", flush=True)
                             else:
                                 raise
-                    elif port == -1:
-                        print(f"[ESP32] {payload.decode()}", flush=True)
             else:
                 time.sleep(0.001)
         except (serial.SerialException, OSError) as e:
@@ -244,11 +258,11 @@ def configure_tun(tun, addr_with_prefix: str, mtu: int):
           flush=True)
 
 
-def run_bridge(tun, ser, mtu: int) -> threading.Event:
+def run_bridge(tun, ser, mtu: int, debug_ip: bool) -> threading.Event:
     """Start bridge threads; returns the stop_event they share."""
     stop = threading.Event()
-    t1 = threading.Thread(target=tun_to_radio,  args=(tun, ser, mtu, stop), daemon=True)
-    t2 = threading.Thread(target=radio_to_tun,  args=(tun, ser, stop),      daemon=True)
+    t1 = threading.Thread(target=tun_to_radio,  args=(tun, ser, mtu, stop, debug_ip), daemon=True)
+    t2 = threading.Thread(target=radio_to_tun,  args=(tun, ser, stop, debug_ip),      daemon=True)
     t1.start()
     t2.start()
     t1.join()
@@ -268,6 +282,8 @@ def main():
                         help=f"MTU (default: {DEFAULT_MTU}, must match firmware IP_MTU)")
     parser.add_argument("--name",  default="tun0",
                         help="TUN interface name (default: tun0)")
+    parser.add_argument("--debug-ip", action="store_true",
+                        help="Log IPv4 header details for packets sent to and from the TUN")
     args = parser.parse_args()
 
     tun = pytun.TunTapDevice(name=args.name, flags=pytun.IFF_TUN | pytun.IFF_NO_PI)
@@ -283,7 +299,7 @@ def main():
 
                 # run_bridge blocks until a thread sets stop (serial error) or
                 # KeyboardInterrupt propagates up through join().
-                run_bridge(tun, ser, args.mtu)
+                run_bridge(tun, ser, args.mtu, args.debug_ip)
 
                 ser.close()
                 print(f"[kiss_tun] Connection lost — retrying in {RECONNECT_DELAY_S} s ...",

@@ -12,7 +12,6 @@ pub struct KissDecoder {
     buf: Vec<u8>,
     max_len: usize,
     overflow: bool,
-    log_buf: Vec<u8>,  // out-of-frame bytes (ESP32 debug output)
 }
 
 impl KissDecoder {
@@ -22,21 +21,6 @@ impl KissDecoder {
             buf: Vec::with_capacity(max_len + 1),
             max_len,
             overflow: false,
-            log_buf: Vec::new(),
-        }
-    }
-
-    fn flush_log(&mut self) {
-        if !self.log_buf.is_empty() {
-            if let Ok(text) = std::str::from_utf8(&self.log_buf) {
-                for line in text.lines() {
-                    let line = line.trim();
-                    if !line.is_empty() {
-                        eprintln!("[ESP32] {}", line);
-                    }
-                }
-            }
-            self.log_buf.clear();
         }
     }
 
@@ -50,46 +34,36 @@ impl KissDecoder {
         match self.state {
             State::Idle => {
                 if byte == 0xC0 {
-                    self.flush_log();
                     self.buf.clear();
                     self.overflow = false;
                     self.state = State::InFrame;
-                } else {
-                    self.log_buf.push(byte);
-                    if byte == b'\n' || self.log_buf.len() >= 256 {
-                        self.flush_log();
-                    }
                 }
             }
             State::InFrame => {
                 if byte == 0xC0 {
-                    if self.overflow || self.buf.len() <= 1 {
+                    if self.buf.is_empty() {
+                        // Empty delimiter: fresh start, no frame emitted.
+                        self.overflow = false;
+                        return false;
+                    }
+                    if self.overflow {
+                        // Oversized frame: discard and start fresh candidate.
                         self.buf.clear();
                         self.overflow = false;
                         return false;
                     }
                     let port = self.buf[0];
                     if port != KISS_DATA_PORT {
-                        // Non-zero port: bytes accumulated between KISS frames.
-                        // The ESP32 debug output lands here as plain ASCII text.
-                        if let Ok(text) = std::str::from_utf8(&self.buf) {
-                            for line in text.lines() {
-                                let line = line.trim();
-                                if !line.is_empty() {
-                                    eprintln!("[ESP32] {}", line);
-                                }
-                            }
-                        }
+                        // Non-data port: discard silently, including overflow state.
                         self.buf.clear();
+                        self.overflow = false;
                         return false;
                     }
-                    
-                    // Copy payload (excluding port byte) to output
+                    // Valid data frame: emit payload (strip port byte).
                     out.clear();
                     out.extend_from_slice(&self.buf[1..]);
                     self.buf.clear();
-                    
-                    // Keep InFrame state for back-to-back single-FEND streaming
+                    // Trailing FEND closes this frame and opens the next candidate.
                     return true;
                 } else if byte == 0xDB {
                     self.state = State::Escape;
@@ -102,6 +76,13 @@ impl KissDecoder {
                 }
             }
             State::Escape => {
+                if byte == 0xC0 {
+                    // FEND while in escape: invalid sequence, discard partial frame.
+                    self.buf.clear();
+                    self.overflow = false;
+                    self.state = State::InFrame;
+                    return false;
+                }
                 self.state = State::InFrame;
                 let decoded_byte = if byte == 0xDC {
                     0xC0
@@ -181,7 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn test_back_to_back_single_fend() {
+    fn test_back_to_back_double_fend() {
         let payload1 = vec![0x11, 0x22];
         let payload2 = vec![0x33, 0x44];
         let mut encoded1 = Vec::new();
@@ -189,10 +170,10 @@ mod tests {
         kiss_encode(&payload1, &mut encoded1);
         kiss_encode(&payload2, &mut encoded2);
 
-        // Combined as 0xC0 0x00 0x11 0x22 0xC0 0x00 0x33 0x44 0xC0
+        // Standard stream: FEND port1 data1 FEND FEND port2 data2 FEND
         let mut stream = Vec::new();
         stream.extend_from_slice(&encoded1);
-        stream.extend_from_slice(&encoded2[1..]); // omit leading FEND of 2nd frame
+        stream.extend_from_slice(&encoded2);
 
         let mut decoder = KissDecoder::new(10);
         let mut decoded = Vec::new();
@@ -207,5 +188,96 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0], payload1);
         assert_eq!(results[1], payload2);
+    }
+
+    #[test]
+    fn test_fend_inside_escape_discards_and_resyncs() {
+        // FEND 0x00 0xAA FESC FEND  <- invalid escape, partial frame discarded
+        // 0x00 0xBB FEND            <- valid frame (FEND above opened it)
+        let stream = vec![0xC0, 0x00, 0xAA, 0xDB, 0xC0, 0x00, 0xBB, 0xC0];
+
+        let mut decoder = KissDecoder::new(100);
+        let mut decoded = Vec::new();
+        let mut results = Vec::new();
+
+        for &b in &stream {
+            if decoder.feed(b, &mut decoded) {
+                results.push(decoded.clone());
+            }
+        }
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], vec![0xBB]);
+    }
+
+    #[test]
+    fn test_non_zero_port_then_valid_resyncs() {
+        // FEND 0x10 0xDE 0xAD FEND  <- port 1, discarded
+        // 0x00 0x42 FEND            <- port 0, valid (FEND above opened it)
+        let stream = vec![0xC0, 0x10, 0xDE, 0xAD, 0xC0, 0x00, 0x42, 0xC0];
+
+        let mut decoder = KissDecoder::new(100);
+        let mut decoded = Vec::new();
+        let mut results = Vec::new();
+
+        for &b in &stream {
+            if decoder.feed(b, &mut decoded) {
+                results.push(decoded.clone());
+            }
+        }
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], vec![0x42]);
+    }
+
+    #[test]
+    fn test_oversized_then_valid_resyncs() {
+        let max_len = 10usize;
+        let mut decoder = KissDecoder::new(max_len);
+        let mut decoded = Vec::new();
+
+        // Open oversized frame
+        decoder.feed(0xC0, &mut decoded); // FEND
+        decoder.feed(0x00, &mut decoded); // port
+        for _ in 0..max_len + 5 {
+            decoder.feed(0xAA, &mut decoded);
+        }
+        // Closing FEND discards oversized frame
+        let r = decoder.feed(0xC0, &mut decoded);
+        assert!(!r);
+
+        // Next valid frame (FEND above opened it)
+        decoder.feed(0x00, &mut decoded); // port
+        decoder.feed(0x77, &mut decoded); // payload
+        let r = decoder.feed(0xC0, &mut decoded);
+
+        assert!(r);
+        assert_eq!(decoded, vec![0x77]);
+    }
+
+    #[test]
+    fn test_369_byte_regression_reproducer() {
+        let payload: Vec<u8> = (0..369u16).map(|i| (i & 0xFF) as u8).collect();
+        let mut encoded = Vec::new();
+        kiss_encode(&payload, &mut encoded);
+
+        let mut decoder = KissDecoder::new(512);
+        let mut decoded = Vec::new();
+        let mut complete = false;
+
+        // Deliver in 64-byte chunks
+        for chunk in encoded.chunks(64) {
+            for &b in chunk {
+                if decoder.feed(b, &mut decoded) {
+                    complete = true;
+                    break;
+                }
+            }
+            if complete { break; }
+        }
+
+        assert!(complete, "369-byte frame not completed");
+        assert_eq!(decoded.len(), 369, "369-byte frame truncated to {}", decoded.len());
+        assert_eq!(decoded, payload);
     }
 }

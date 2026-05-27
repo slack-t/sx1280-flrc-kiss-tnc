@@ -187,8 +187,8 @@ void test_link_ack_packet_roundtrip() {
     TEST_ASSERT_EQUAL_UINT8(ack.received_mask, decoded.received_mask);
 }
 
-// ── T1.8: back-to-back frames with single shared FEND separator ───────────────
-void test_back_to_back_single_fend() {
+// ── T1.8: back-to-back frames with standard double-FEND boundary ─────────────
+void test_back_to_back_double_fend() {
     IpFrame a, b;
     a.len = 2; a.data[0] = 0x11; a.data[1] = 0x22;
     b.len = 2; b.data[0] = 0x33; b.data[1] = 0x44;
@@ -197,8 +197,7 @@ void test_back_to_back_single_fend() {
     size_t  lenA = Kiss::encode(a, encA, sizeof(encA));
     size_t  lenB = Kiss::encode(b, encB, sizeof(encB));
 
-    // Single-FEND stream: FEND portA dataA FEND portB dataB FEND
-    // Drop the leading FEND of encB so encA's trailing FEND serves both.
+    // Standard stream: FEND portA dataA FEND FEND portB dataB FEND
     Kiss    decoder;
     IpFrame out;
     int     count = 0;
@@ -207,8 +206,7 @@ void test_back_to_back_single_fend() {
     for (size_t i = 0; i < lenA; i++) {
         if (decoder.decode(encA[i], out)) results[count++] = out;
     }
-    // Skip encB[0] (leading FEND) — encA's trailing FEND already opened the frame
-    for (size_t i = 1; i < lenB; i++) {
+    for (size_t i = 0; i < lenB; i++) {
         if (decoder.decode(encB[i], out)) results[count++] = out;
     }
 
@@ -217,6 +215,118 @@ void test_back_to_back_single_fend() {
     TEST_ASSERT_EQUAL_MEMORY(a.data, results[0].data, a.len);
     TEST_ASSERT_EQUAL_UINT16(b.len, results[1].len);
     TEST_ASSERT_EQUAL_MEMORY(b.data, results[1].data, b.len);
+}
+
+// ── T1.10: FEND inside escape discards partial frame and resyncs ──────────────
+void test_fend_inside_escape_discards_frame_and_resyncs() {
+    // Build stream: FEND 0x00 0xAA FESC FEND 0x00 0xBB FEND
+    //   Frame 1: starts, gets port+0xAA, then FESC followed by FEND (invalid escape)
+    //            -> partial frame discarded
+    //   Frame 2: FEND 0x00 0xBB FEND -> should decode cleanly
+    uint8_t stream[] = {
+        KISS_FEND, 0x00, 0xAA, KISS_FESC, KISS_FEND,   // invalid escape at FEND
+        0x00, 0xBB, KISS_FEND                            // frame 2 (FEND already opened it)
+    };
+
+    Kiss    decoder;
+    IpFrame out;
+    int     count = 0;
+    IpFrame results[2];
+
+    for (uint8_t b : stream) {
+        if (decoder.decode(b, out)) {
+            if (count < 2) results[count] = out;
+            count++;
+        }
+    }
+
+    TEST_ASSERT_EQUAL_INT(1, count);
+    TEST_ASSERT_EQUAL_UINT16(1, results[0].len);
+    TEST_ASSERT_EQUAL_HEX8(0xBB, results[0].data[0]);
+}
+
+// ── T1.11: non-zero port frame followed by valid data frame resyncs cleanly ───
+void test_non_zero_port_then_valid_frame_resyncs_cleanly() {
+    // Frame 1: port=0x10 (SET_TXDELAY), payload=0xDE 0xAD  -> discarded
+    // Frame 2: port=0x00, payload=0x42  -> should decode
+    uint8_t stream[] = {
+        KISS_FEND, 0x10, 0xDE, 0xAD, KISS_FEND,
+        0x00, 0x42, KISS_FEND
+    };
+
+    Kiss    decoder;
+    IpFrame out;
+    int     count = 0;
+    IpFrame results[2];
+
+    for (uint8_t b : stream) {
+        if (decoder.decode(b, out)) {
+            if (count < 2) results[count] = out;
+            count++;
+        }
+    }
+
+    TEST_ASSERT_EQUAL_INT(1, count);
+    TEST_ASSERT_EQUAL_UINT16(1, results[0].len);
+    TEST_ASSERT_EQUAL_HEX8(0x42, results[0].data[0]);
+}
+
+// ── T1.12: oversized frame followed by valid frame resyncs cleanly ────────────
+void test_oversized_frame_then_valid_frame_resyncs_cleanly() {
+    Kiss    decoder;
+    IpFrame out;
+
+    decoder.decode(KISS_FEND, out);  // open frame
+    decoder.decode(0x00, out);       // port byte
+
+    // Overflow the buffer
+    for (int i = 0; i < IP_MTU + 5; i++) {
+        decoder.decode(0xAA, out);
+    }
+
+    // Closing FEND discards oversized frame and starts next candidate
+    bool done = decoder.decode(KISS_FEND, out);
+    TEST_ASSERT_FALSE(done);
+
+    // Now feed a valid small frame (FEND already opened next candidate)
+    decoder.decode(0x00, out);    // port byte
+    decoder.decode(0x77, out);    // payload
+    done = decoder.decode(KISS_FEND, out);
+
+    TEST_ASSERT_TRUE(done);
+    TEST_ASSERT_EQUAL_UINT16(1, out.len);
+    TEST_ASSERT_EQUAL_HEX8(0x77, out.data[0]);
+}
+
+// ── T1.13: 369-byte payload decodes without truncation ───────────────────────
+void test_369_byte_regression_reproducer() {
+    IpFrame original;
+    original.len = 369;
+    for (uint16_t i = 0; i < original.len; i++) {
+        original.data[i] = static_cast<uint8_t>(i & 0xFF);
+    }
+
+    uint8_t encBuf[IP_MTU * 2 + 3];
+    size_t  encLen = Kiss::encode(original, encBuf, sizeof(encBuf));
+
+    Kiss    decoder;
+    IpFrame decoded;
+    bool    complete = false;
+
+    // Deliver in 64-byte chunks to simulate realistic serial chunking
+    for (size_t offset = 0; offset < encLen && !complete; ) {
+        size_t chunk = (encLen - offset < 64) ? (encLen - offset) : 64;
+        for (size_t i = 0; i < chunk && !complete; i++) {
+            if (decoder.decode(encBuf[offset + i], decoded)) {
+                complete = true;
+            }
+        }
+        offset += chunk;
+    }
+
+    TEST_ASSERT_TRUE_MESSAGE(complete, "369-byte frame not completed");
+    TEST_ASSERT_EQUAL_UINT16_MESSAGE(369, decoded.len, "369-byte frame truncated");
+    TEST_ASSERT_EQUAL_MEMORY(original.data, decoded.data, original.len);
 }
 
 // ── T1.9: large frame (IP_MTU bytes) round-trips through KISS encode/decode ──
@@ -256,7 +366,11 @@ int main(int argc, char** argv) {
     RUN_TEST(test_empty_frame_ignored);
     RUN_TEST(test_link_data_packet_roundtrip);
     RUN_TEST(test_link_ack_packet_roundtrip);
-    RUN_TEST(test_back_to_back_single_fend);
+    RUN_TEST(test_back_to_back_double_fend);
     RUN_TEST(test_large_frame_roundtrip);
+    RUN_TEST(test_fend_inside_escape_discards_frame_and_resyncs);
+    RUN_TEST(test_non_zero_port_then_valid_frame_resyncs_cleanly);
+    RUN_TEST(test_oversized_frame_then_valid_frame_resyncs_cleanly);
+    RUN_TEST(test_369_byte_regression_reproducer);
     return UNITY_END();
 }

@@ -40,23 +40,29 @@ bool Kiss::decode(uint8_t byte, IpFrame& frame) {
 
         case State::IN_FRAME:
             if (byte == KISS_FEND) {
-                if (_overflow || _len == 0) {
+                if (_len == 0) {
+                    // Empty delimiter while in-frame: fresh start, no frame emitted.
+                    _overflow = false;
+                    break;
+                }
+                if (_overflow) {
+                    // Oversized frame: discard and start fresh candidate.
                     _len      = 0;
                     _overflow = false;
                     break;
                 }
                 if (_buf[0] != KISS_DATA_FRAME) {
-                    _len   = 0;
-                    _state = State::IN_FRAME;
+                    // Non-data port: discard silently, including any overflow state.
+                    _len      = 0;
+                    _overflow = false;
                     break;
                 }
-                // Strip the port byte; deliver payload
+                // Valid data frame: emit payload (strip port byte).
                 uint16_t payloadLen = _len - 1;
                 memcpy(frame.data, _buf + 1, payloadLen);
                 frame.len = payloadLen;
                 _len      = 0;
-                // Trailing FEND acts as opening FEND for the next frame
-                // (single-FEND back-to-back stream compatibility).
+                // Trailing FEND closes this frame and opens the next candidate.
                 _state    = State::IN_FRAME;
                 return true;
             } else if (byte == KISS_FESC) {
@@ -71,6 +77,13 @@ bool Kiss::decode(uint8_t byte, IpFrame& frame) {
             break;
 
         case State::ESCAPE:
+            if (byte == KISS_FEND) {
+                // FEND while in escape: invalid sequence, discard partial frame.
+                _len      = 0;
+                _overflow = false;
+                _state    = State::IN_FRAME;
+                break;
+            }
             _state = State::IN_FRAME;
             if (byte == KISS_TFEND) {
                 byte = KISS_FEND;

@@ -10,6 +10,9 @@
 #include "display/Display.h"
 #include "stats/Stats.h"
 
+// Set to 1 to log decoded KISS frame length and first 8 bytes on serial RX
+#define DEBUG_KISS_SERIAL_RX 0
+
 // ── Globals ───────────────────────────────────────────────────────────────────
 static Radio   radio;
 static Display display;
@@ -85,6 +88,8 @@ static void finalizeReassembly(Reassembler& ra, CompletedFrameCache& completed) 
     IpFrame frame;
     frame.len = 0;
     for (uint8_t i = 0; i < ra.total_frags; i++) {
+        Serial.printf("[ARQ RX:ASSEMBLE seq=%04x i=%u flen=%u]\n",
+                      ra.seq, i, ra.frag_len[i]);
         memcpy(frame.data + frame.len,
                ra.buf + i * FRAMING_FRAG_DATA,
                ra.frag_len[i]);
@@ -93,6 +98,8 @@ static void finalizeReassembly(Reassembler& ra, CompletedFrameCache& completed) 
     frame.rssi = ra.last_rssi;
 
     if (!ipv4FrameLooksComplete(frame)) {
+        Serial.printf("[ARQ RX:FAIL seq=%04x tot=%u mask=%02x reason=ipv4_check len=%u]\n",
+                      ra.seq, ra.total_frags, ra.received_mask, frame.len);
         noteRadioError();
         ra.reset();
         return;
@@ -111,6 +118,8 @@ static void finalizeReassembly(Reassembler& ra, CompletedFrameCache& completed) 
         noteQueueDrop();
         noteRadioError();
     }
+    Serial.printf("[ARQ RX:DONE seq=%04x tot=%u mask=%02x len=%u]\n",
+                  ra.seq, ra.total_frags, ra.received_mask, frame.len);
     completed.seq         = ra.seq;
     completed.total_frags = ra.total_frags;
     completed.ack_mask    = ra.received_mask;
@@ -127,6 +136,9 @@ static void sendAckForReassembly(Reassembler& ra) {
     ack.seq           = ra.seq;
     ack.total_frags   = ra.total_frags;
     ack.received_mask = ra.received_mask;
+
+    Serial.printf("[ARQ RX:ACK seq=%04x tot=%u mask=%02x complete=%d]\n",
+                  ra.seq, ra.total_frags, ra.received_mask, (int)ra.isComplete());
 
     Packet pkt;
     framingBuildAckPacket(pkt, ack);
@@ -196,6 +208,8 @@ static void radioRxTask(void*) {
                 continue;
             }
             if (ra.seq != FRAMING_SEQ_UNSET && !ra.isComplete()) {
+                Serial.printf("[ARQ RX:DROP seq=%04x tot=%u mask=%02x reason=idle]\n",
+                              ra.seq, ra.total_frags, ra.received_mask);
                 noteReassemblyDrop();
                 ra.reset();
                 continue;
@@ -247,6 +261,8 @@ static void radioRxTask(void*) {
         if (completed.seq == seq &&
             completed.total_frags == total_frags &&
             (now_ms - completed.tick_ms) <= RADIO_DUP_CACHE_MS) {
+            Serial.printf("[ARQ RX:DUP seq=%04x tot=%u mask=%02x]\n",
+                          seq, total_frags, completed.ack_mask);
             // Re-ACK without re-delivering. Use AckFrame + Packet directly to
             // avoid a large Reassembler on the task stack.
             AckFrame dupAck;
@@ -271,6 +287,8 @@ static void radioRxTask(void*) {
 
         if (ra.seq != FRAMING_SEQ_UNSET &&
             (now_ms - ra.last_tick_ms > reassemblyTimeoutMs(ra.total_frags))) {
+            Serial.printf("[ARQ RX:DROP seq=%04x tot=%u mask=%02x reason=timeout]\n",
+                          ra.seq, ra.total_frags, ra.received_mask);
             noteReassemblyDrop();
             ra.reset();
         }
@@ -303,6 +321,10 @@ static void radioRxTask(void*) {
             ra.ack_pending    = true;
             ra.ack_due_ms     = now_ms + ackFallbackDelayMs(total_frags);
         }
+
+        Serial.printf("[ARQ RX:FRAG seq=%04x tot=%u idx=%u new=%d re=%d mask=%02x flen=%u]\n",
+                      seq, total_frags, idx, (int)is_new_frag, (int)round_end,
+                      ra.received_mask, frag_data_len);
 
         if (round_end) {
             // Sender signals end of its TX burst. Schedule a short turnaround
@@ -340,6 +362,9 @@ static void radioTxTask(void*) {
         sm.get().arqFramesStarted++;
         sm.unlock();
 
+        Serial.printf("[ARQ TX:START seq=%04x tot=%u len=%u]\n",
+                      seq, total_frags, frame.len);
+
         // LBT-CSMA: sense channel before the first fragment only.
         for (int lbt = 0; radio.isChannelBusy(); lbt++) {
             if (lbt >= RADIO_LBT_MAX_RETRIES) break;
@@ -349,6 +374,8 @@ static void radioTxTask(void*) {
         }
 
         for (uint8_t round = 0; round < RADIO_ARQ_MAX_ROUNDS && pending_mask != 0; round++) {
+            Serial.printf("[ARQ TX:ROUND seq=%04x tot=%u round=%u pending=%02x]\n",
+                          seq, total_frags, round, pending_mask);
             uint8_t sent_mask = 0;
             for (uint8_t idx = 0; idx < total_frags; idx++) {
                 const uint8_t bit = static_cast<uint8_t>(1u << idx);
@@ -413,6 +440,9 @@ static void radioTxTask(void*) {
                 if (ack.seq != seq || ack.total_frags != total_frags) {
                     continue;
                 }
+                Serial.printf("[ARQ TX:ACK seq=%04x tot=%u ack_mask=%02x pend=%02x->%02x]\n",
+                              seq, total_frags, ack.received_mask, pending_mask,
+                              static_cast<uint8_t>(pending_mask & ~ack.received_mask));
                 pending_mask &= static_cast<uint8_t>(~ack.received_mask);
                 got_ack = true;
                 break;
@@ -423,6 +453,8 @@ static void radioTxTask(void*) {
                 sm.lock();
                 sm.get().arqAckTimeoutCount++;
                 sm.unlock();
+                Serial.printf("[ARQ TX:TIMEOUT seq=%04x tot=%u round=%u pending=%02x]\n",
+                              seq, total_frags, round, pending_mask);
             }
 
             if (pending_mask == 0) {
@@ -432,6 +464,8 @@ static void radioTxTask(void*) {
                 sm.get().txBytes += frame.len;
                 sm.unlock();
                 delivered = true;
+                Serial.printf("[ARQ TX:DONE seq=%04x tot=%u rounds=%u]\n",
+                              seq, total_frags, round + 1);
                 break;
             }
         }
@@ -441,6 +475,8 @@ static void radioTxTask(void*) {
             sm.lock();
             sm.get().arqFramesFailed++;
             sm.unlock();
+            Serial.printf("[ARQ TX:FAIL seq=%04x tot=%u pending=%02x]\n",
+                          seq, total_frags, pending_mask);
             noteRadioError();
         }
     }
@@ -461,6 +497,13 @@ static void serialRxTask(void*) {
                 int c = Serial.read();
                 if (c < 0) break;
                 if (decoder.decode(static_cast<uint8_t>(c), frame)) {
+#if DEBUG_KISS_SERIAL_RX
+                    Serial.printf("[KISS RX] len=%u hex=", frame.len);
+                    for (int _i = 0; _i < 8 && _i < frame.len; _i++) {
+                        Serial.printf("%02x ", frame.data[_i]);
+                    }
+                    Serial.printf("\n");
+#endif
                     // Block indefinitely on queue to apply backpressure to USB CDC
                     xQueueSend(txQueue, &frame, portMAX_DELAY);
                 }
@@ -492,16 +535,29 @@ static void serialTxTask(void*) {
         xQueueReceive(rxQueue, &frame, portMAX_DELAY);
         size_t encLen = Kiss::encode(frame, encBuf, sizeof(encBuf));
         size_t offset = 0;
+        uint32_t retry_start_ms = 0;
+        bool in_retry = false;
+
         while (offset < encLen) {
             size_t written = Serial.write(encBuf + offset, encLen - offset);
-            if (written == 0) {
-                noteRadioError();
-                break;
+            if (written > 0) {
+                offset += written;
+                in_retry = false; // Reset retry window on successful write progress
+            } else {
+                if (!in_retry) {
+                    retry_start_ms = millis();
+                    in_retry = true;
+                } else if (millis() - retry_start_ms > 50) { // 50 ms timeout
+                    noteRadioError();
+                    break;
+                }
+                // Yield to allow other tasks to run and allow USB CDC buffer to drain
+                TickType_t delay_ticks = pdMS_TO_TICKS(1);
+                if (delay_ticks == 0) {
+                    delay_ticks = 1;
+                }
+                vTaskDelay(delay_ticks);
             }
-            offset += written;
-        }
-        if (offset == encLen) {
-            Serial.flush();
         }
     }
 }
