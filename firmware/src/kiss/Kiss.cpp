@@ -2,11 +2,17 @@
 #include <string.h>
 
 size_t Kiss::encode(const IpFrame& frame, uint8_t* outBuf, size_t outBufLen) {
-    size_t i = 0;
+    size_t requiredLen = 3; // FEND + port + trailing FEND
+    for (uint16_t n = 0; n < frame.len; n++) {
+        uint8_t b = frame.data[n];
+        requiredLen += (b == KISS_FEND || b == KISS_FESC) ? 2u : 1u;
+    }
+    if (requiredLen > outBufLen) {
+        return 0;
+    }
 
-    auto write = [&](uint8_t b) {
-        if (i < outBufLen) outBuf[i++] = b;
-    };
+    size_t i = 0;
+    auto write = [&](uint8_t b) { outBuf[i++] = b; };
 
     write(KISS_FEND);
     write(KISS_DATA_FRAME);
@@ -41,20 +47,23 @@ bool Kiss::decode(uint8_t byte, IpFrame& frame) {
         case State::IN_FRAME:
             if (byte == KISS_FEND) {
                 if (_len == 0) {
-                    // Empty delimiter while in-frame: fresh start, no frame emitted.
+                    // Empty frame: ignore and require a fresh FEND to reopen.
                     _overflow = false;
+                    _state    = State::IDLE;
                     break;
                 }
                 if (_overflow) {
-                    // Oversized frame: discard and start fresh candidate.
+                    // Oversized frame: discard and require a fresh FEND.
                     _len      = 0;
                     _overflow = false;
+                    _state    = State::IDLE;
                     break;
                 }
                 if (_buf[0] != KISS_DATA_FRAME) {
-                    // Non-data port: discard silently, including any overflow state.
+                    // Non-data port: discard silently and require a fresh FEND.
                     _len      = 0;
                     _overflow = false;
+                    _state    = State::IDLE;
                     break;
                 }
                 // Valid data frame: emit payload (strip port byte).
@@ -62,8 +71,8 @@ bool Kiss::decode(uint8_t byte, IpFrame& frame) {
                 memcpy(frame.data, _buf + 1, payloadLen);
                 frame.len = payloadLen;
                 _len      = 0;
-                // Trailing FEND closes this frame and opens the next candidate.
-                _state    = State::IN_FRAME;
+                _overflow = false;
+                _state    = State::IDLE;
                 return true;
             } else if (byte == KISS_FESC) {
                 _state = State::ESCAPE;
@@ -77,23 +86,19 @@ bool Kiss::decode(uint8_t byte, IpFrame& frame) {
             break;
 
         case State::ESCAPE:
-            if (byte == KISS_FEND) {
-                // FEND while in escape: invalid sequence, discard partial frame.
+            if (byte == KISS_TFEND || byte == KISS_TFESC) {
+                _state = State::IN_FRAME;
+                byte = (byte == KISS_TFEND) ? KISS_FEND : KISS_FESC;
+                if (_len < IP_MTU + 1) {
+                    _buf[_len++] = byte;
+                } else {
+                    _overflow = true;
+                }
+            } else {
+                // Invalid escape: discard partial frame and require a fresh FEND.
                 _len      = 0;
                 _overflow = false;
-                _state    = State::IN_FRAME;
-                break;
-            }
-            _state = State::IN_FRAME;
-            if (byte == KISS_TFEND) {
-                byte = KISS_FEND;
-            } else if (byte == KISS_TFESC) {
-                byte = KISS_FESC;
-            }
-            if (_len < IP_MTU + 1) {
-                _buf[_len++] = byte;
-            } else {
-                _overflow = true;
+                _state    = State::IDLE;
             }
             break;
     }

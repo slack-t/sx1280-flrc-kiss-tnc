@@ -1,6 +1,14 @@
 #include "Radio.h"
 #include <SPI.h>
 
+#if SERIAL_CONSOLE_LOGS
+#define SERIAL_LOG(...) Serial.printf(__VA_ARGS__)
+#define SERIAL_LOG_LN(msg) Serial.println(msg)
+#else
+#define SERIAL_LOG(...) ((void)0)
+#define SERIAL_LOG_LN(msg) ((void)0)
+#endif
+
 static Radio* _radioInstance = nullptr;
 
 int16_t Radio::begin() {
@@ -12,8 +20,8 @@ int16_t Radio::begin() {
     _spiMutex   = xSemaphoreCreateMutex();
 
     SPI.begin(RADIO_SCK, RADIO_MISO, RADIO_MOSI, RADIO_NSS);
-    Serial.printf("[radio] SPI started (SCK=%d MISO=%d MOSI=%d NSS=%d)\n",
-                  RADIO_SCK, RADIO_MISO, RADIO_MOSI, RADIO_NSS);
+    SERIAL_LOG("[radio] SPI started (SCK=%d MISO=%d MOSI=%d NSS=%d)\n",
+               RADIO_SCK, RADIO_MISO, RADIO_MOSI, RADIO_NSS);
 
     // RadioLib 6.x beginFLRC: (freq_MHz, bitrate_kbps, cr, power_dBm, preamble_bits, BT)
     // Sync word is NOT a parameter — set separately via setSyncWord() below.
@@ -26,24 +34,24 @@ int16_t Radio::begin() {
         RADIO_BT
     );
     if (state != RADIOLIB_ERR_NONE) {
-        Serial.printf("[radio] beginFLRC failed! Error code: %d\n", state);
+        SERIAL_LOG("[radio] beginFLRC failed! Error code: %d\n", state);
         return state;
     }
-    Serial.println("[radio] beginFLRC -> OK");
+    SERIAL_LOG_LN("[radio] beginFLRC -> OK");
 
     uint8_t syncWord[] = RADIO_SYNC_WORD_BYTES;
     state = _radio.setSyncWord(syncWord, RADIO_SYNC_WORD_LEN);
     if (state != RADIOLIB_ERR_NONE) {
-        Serial.printf("[radio] setSyncWord failed! Error code: %d\n", state);
+        SERIAL_LOG("[radio] setSyncWord failed! Error code: %d\n", state);
         return state;
     }
-    Serial.println("[radio] setSyncWord -> OK");
+    SERIAL_LOG_LN("[radio] setSyncWord -> OK");
 
     // DIO1 fires on both RX done and TX done. The ISR guards against the
     // TX-done pulse with _txActive so only genuine RX events wake radioRxTask.
     _radio.setDio1Action(_dio1Isr);
 
-    Serial.println("[radio] init OK");
+    SERIAL_LOG_LN("[radio] init OK");
     return RADIOLIB_ERR_NONE;
 }
 

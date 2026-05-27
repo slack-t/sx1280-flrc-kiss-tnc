@@ -42,28 +42,32 @@ impl KissDecoder {
             State::InFrame => {
                 if byte == 0xC0 {
                     if self.buf.is_empty() {
-                        // Empty delimiter: fresh start, no frame emitted.
+                        // Empty frame: ignore and require a fresh FEND.
                         self.overflow = false;
+                        self.state = State::Idle;
                         return false;
                     }
                     if self.overflow {
-                        // Oversized frame: discard and start fresh candidate.
+                        // Oversized frame: discard and require a fresh FEND.
                         self.buf.clear();
                         self.overflow = false;
+                        self.state = State::Idle;
                         return false;
                     }
                     let port = self.buf[0];
                     if port != KISS_DATA_PORT {
-                        // Non-data port: discard silently, including overflow state.
+                        // Non-data port: discard silently and require a fresh FEND.
                         self.buf.clear();
                         self.overflow = false;
+                        self.state = State::Idle;
                         return false;
                     }
                     // Valid data frame: emit payload (strip port byte).
                     out.clear();
                     out.extend_from_slice(&self.buf[1..]);
                     self.buf.clear();
-                    // Trailing FEND closes this frame and opens the next candidate.
+                    self.overflow = false;
+                    self.state = State::Idle;
                     return true;
                 } else if byte == 0xDB {
                     self.state = State::Escape;
@@ -76,11 +80,11 @@ impl KissDecoder {
                 }
             }
             State::Escape => {
-                if byte == 0xC0 {
-                    // FEND while in escape: invalid sequence, discard partial frame.
+                if byte != 0xDC && byte != 0xDD {
+                    // Invalid escape: discard partial frame and require a fresh FEND.
                     self.buf.clear();
                     self.overflow = false;
-                    self.state = State::InFrame;
+                    self.state = State::Idle;
                     return false;
                 }
                 self.state = State::InFrame;
@@ -193,8 +197,8 @@ mod tests {
     #[test]
     fn test_fend_inside_escape_discards_and_resyncs() {
         // FEND 0x00 0xAA FESC FEND  <- invalid escape, partial frame discarded
-        // 0x00 0xBB FEND            <- valid frame (FEND above opened it)
-        let stream = vec![0xC0, 0x00, 0xAA, 0xDB, 0xC0, 0x00, 0xBB, 0xC0];
+        // FEND 0x00 0xBB FEND       <- valid frame after a fresh opener
+        let stream = vec![0xC0, 0x00, 0xAA, 0xDB, 0xC0, 0xC0, 0x00, 0xBB, 0xC0];
 
         let mut decoder = KissDecoder::new(100);
         let mut decoded = Vec::new();
@@ -213,8 +217,8 @@ mod tests {
     #[test]
     fn test_non_zero_port_then_valid_resyncs() {
         // FEND 0x10 0xDE 0xAD FEND  <- port 1, discarded
-        // 0x00 0x42 FEND            <- port 0, valid (FEND above opened it)
-        let stream = vec![0xC0, 0x10, 0xDE, 0xAD, 0xC0, 0x00, 0x42, 0xC0];
+        // FEND 0x00 0x42 FEND       <- port 0, valid after a fresh opener
+        let stream = vec![0xC0, 0x10, 0xDE, 0xAD, 0xC0, 0xC0, 0x00, 0x42, 0xC0];
 
         let mut decoder = KissDecoder::new(100);
         let mut decoded = Vec::new();
@@ -246,7 +250,8 @@ mod tests {
         let r = decoder.feed(0xC0, &mut decoded);
         assert!(!r);
 
-        // Next valid frame (FEND above opened it)
+        // Next valid frame requires a fresh FEND opener
+        decoder.feed(0xC0, &mut decoded); // FEND
         decoder.feed(0x00, &mut decoded); // port
         decoder.feed(0x77, &mut decoded); // payload
         let r = decoder.feed(0xC0, &mut decoded);

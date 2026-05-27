@@ -18,7 +18,7 @@ class Kiss {
 public:
     // Encode an IpFrame into a KISS frame.
     // outBuf must be at least (2 * IP_MTU + 4) bytes (1011 bytes worst-case).
-    // Returns number of bytes written to outBuf.
+    // Returns number of bytes written to outBuf, or 0 if outBuf is too small.
     static size_t encode(const IpFrame& frame, uint8_t* outBuf, size_t outBufLen);
 
     // Feed one byte at a time into the decoder.

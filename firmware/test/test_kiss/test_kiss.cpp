@@ -217,15 +217,15 @@ void test_back_to_back_double_fend() {
     TEST_ASSERT_EQUAL_MEMORY(b.data, results[1].data, b.len);
 }
 
-// ── T1.10: FEND inside escape discards partial frame and resyncs ──────────────
+// ── T1.10: invalid escape discards partial frame and requires fresh FEND ─────
 void test_fend_inside_escape_discards_frame_and_resyncs() {
-    // Build stream: FEND 0x00 0xAA FESC FEND 0x00 0xBB FEND
+    // Build stream: FEND 0x00 0xAA FESC FEND FEND 0x00 0xBB FEND
     //   Frame 1: starts, gets port+0xAA, then FESC followed by FEND (invalid escape)
     //            -> partial frame discarded
-    //   Frame 2: FEND 0x00 0xBB FEND -> should decode cleanly
+    //   Frame 2: fresh FEND 0x00 0xBB FEND -> should decode cleanly
     uint8_t stream[] = {
         KISS_FEND, 0x00, 0xAA, KISS_FESC, KISS_FEND,   // invalid escape at FEND
-        0x00, 0xBB, KISS_FEND                            // frame 2 (FEND already opened it)
+        KISS_FEND, 0x00, 0xBB, KISS_FEND
     };
 
     Kiss    decoder;
@@ -251,7 +251,7 @@ void test_non_zero_port_then_valid_frame_resyncs_cleanly() {
     // Frame 2: port=0x00, payload=0x42  -> should decode
     uint8_t stream[] = {
         KISS_FEND, 0x10, 0xDE, 0xAD, KISS_FEND,
-        0x00, 0x42, KISS_FEND
+        KISS_FEND, 0x00, 0x42, KISS_FEND
     };
 
     Kiss    decoder;
@@ -284,11 +284,12 @@ void test_oversized_frame_then_valid_frame_resyncs_cleanly() {
         decoder.decode(0xAA, out);
     }
 
-    // Closing FEND discards oversized frame and starts next candidate
+    // Closing FEND discards oversized frame and returns to IDLE
     bool done = decoder.decode(KISS_FEND, out);
     TEST_ASSERT_FALSE(done);
 
-    // Now feed a valid small frame (FEND already opened next candidate)
+    // Now feed a valid small frame with a fresh FEND opener
+    decoder.decode(KISS_FEND, out);
     decoder.decode(0x00, out);    // port byte
     decoder.decode(0x77, out);    // payload
     done = decoder.decode(KISS_FEND, out);

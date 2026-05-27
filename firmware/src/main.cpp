@@ -10,6 +10,14 @@
 #include "display/Display.h"
 #include "stats/Stats.h"
 
+#if SERIAL_CONSOLE_LOGS
+#define BOOT_LOG(...) Serial.printf(__VA_ARGS__)
+#define BOOT_LOG_LN(msg) Serial.println(msg)
+#else
+#define BOOT_LOG(...) ((void)0)
+#define BOOT_LOG_LN(msg) ((void)0)
+#endif
+
 // Set to 1 to log decoded KISS frame length and first 8 bytes on serial RX
 #define DEBUG_KISS_SERIAL_RX 0
 // Set to 1 to log ARQ RX/TX diagnostics on the serial console
@@ -542,6 +550,10 @@ static void serialTxTask(void*) {
     for (;;) {
         xQueueReceive(rxQueue, &frame, portMAX_DELAY);
         size_t encLen = Kiss::encode(frame, encBuf, sizeof(encBuf));
+        if (encLen == 0) {
+            noteRadioError();
+            continue;
+        }
         size_t offset = 0;
         uint32_t retry_start_ms = 0;
         bool in_retry = false;
@@ -588,37 +600,40 @@ static void displayTask(void*) {
 void setup() {
     Serial.begin(0);   // USB CDC — baud rate is ignored by native USB
 
-    // Wait up to 2 seconds for a serial monitor to connect so the board can boot standalone
+#if SERIAL_CONSOLE_LOGS
+    // Wait briefly for a serial monitor only when the CDC port is being used
+    // as a console rather than a pure KISS transport stream.
     for (int i = 0; i < 200 && !Serial; i++) {
         delay(10);
     }
-
-    // Give serial CDC time to fully establish if connected, then print banner
     delay(100);
-    Serial.println("\n\n=== SX1280 KISS TNC BOOTING ===");
+    BOOT_LOG_LN("\n\n=== SX1280 KISS TNC BOOTING ===");
+#endif
 
     // Populate initial stats with config values
     {
-        Serial.println("[main] Initializing statistics tracker...");
+        BOOT_LOG_LN("[main] Initializing statistics tracker...");
         auto& sm = StatsManager::instance();
         sm.lock();
         sm.get().freqMHz     = RADIO_FREQ_MHZ;
         sm.get().bitrateKbps = (uint32_t)RADIO_BITRATE_KBPS;
         sm.unlock();
-        Serial.println("[main] Statistics tracker ready.");
+        BOOT_LOG_LN("[main] Statistics tracker ready.");
     }
 
-    Serial.println("[main] Initializing SSD1306 OLED display...");
+    BOOT_LOG_LN("[main] Initializing SSD1306 OLED display...");
     display.begin();
-    Serial.println("[main] Display initialized successfully.");
+    BOOT_LOG_LN("[main] Display initialized successfully.");
 
-    // Small delay to let the boot message be visible to the user
+#if SERIAL_CONSOLE_LOGS
+    // Small delay to let the boot message be visible to the user.
     delay(500);
+#endif
 
-    Serial.println("[main] Initializing SX1280 radio transceiver...");
+    BOOT_LOG_LN("[main] Initializing SX1280 radio transceiver...");
     int16_t radioErr = radio.begin();
     if (radioErr != RADIOLIB_ERR_NONE) {
-        Serial.printf("[main] CRITICAL: Radio initialization failed! Error code: %d\n", radioErr);
+        BOOT_LOG("[main] CRITICAL: Radio initialization failed! Error code: %d\n", radioErr);
         display.showError("Radio Init Fail", radioErr);
 
         // Halt state - flash the onboard LED (GPIO 37) as an additional visual indicator
@@ -630,47 +645,47 @@ void setup() {
             delay(100);
         }
     }
-    Serial.println("[main] Radio transceiver ready.");
+    BOOT_LOG_LN("[main] Radio transceiver ready.");
 
-    Serial.println("[main] Activating continuous RX mode...");
+    BOOT_LOG_LN("[main] Activating continuous RX mode...");
     radio.startReceive();
-    Serial.println("[main] Continuous RX mode active.");
+    BOOT_LOG_LN("[main] Continuous RX mode active.");
 
-    Serial.println("[main] Creating FreeRTOS communication queues...");
+    BOOT_LOG_LN("[main] Creating FreeRTOS communication queues...");
     txQueue = xQueueCreate(TX_QUEUE_DEPTH, sizeof(IpFrame));
     rxQueue = xQueueCreate(RX_QUEUE_DEPTH, sizeof(IpFrame));
     ackQueue = xQueueCreate(8, sizeof(AckFrame));
     if (txQueue == nullptr || rxQueue == nullptr || ackQueue == nullptr) {
-        Serial.println("[main] CRITICAL: Failed to create FreeRTOS queues!");
+        BOOT_LOG_LN("[main] CRITICAL: Failed to create FreeRTOS queues!");
         display.showError("Queue Create Fail", -99);
         while (true) { delay(1000); }
     }
-    Serial.println("[main] FreeRTOS queues created successfully.");
+    BOOT_LOG_LN("[main] FreeRTOS queues created successfully.");
 
-    Serial.println("[main] Spawning FreeRTOS tasks...");
+    BOOT_LOG_LN("[main] Spawning FreeRTOS tasks...");
 
     BaseType_t taskStatus;
 
     taskStatus = xTaskCreatePinnedToCore(radioRxTask,  "radioRx",  STACK_RADIO_RX,  nullptr, PRIO_RADIO,  nullptr, 1);
-    Serial.printf("[main] Spawn task 'radioRx' on Core 1 -> %s\n", taskStatus == pdPASS ? "OK" : "FAILED");
+    BOOT_LOG("[main] Spawn task 'radioRx' on Core 1 -> %s\n", taskStatus == pdPASS ? "OK" : "FAILED");
 
     taskStatus = xTaskCreatePinnedToCore(radioTxTask,  "radioTx",  STACK_RADIO_TX,  nullptr, PRIO_RADIO,  nullptr, 1);
-    Serial.printf("[main] Spawn task 'radioTx' on Core 1 -> %s\n", taskStatus == pdPASS ? "OK" : "FAILED");
+    BOOT_LOG("[main] Spawn task 'radioTx' on Core 1 -> %s\n", taskStatus == pdPASS ? "OK" : "FAILED");
 
     taskStatus = xTaskCreatePinnedToCore(serialRxTask, "serialRx", STACK_SERIAL_RX, nullptr, PRIO_SERIAL, nullptr, 0);
-    Serial.printf("[main] Spawn task 'serialRx' on Core 0 -> %s\n", taskStatus == pdPASS ? "OK" : "FAILED");
+    BOOT_LOG("[main] Spawn task 'serialRx' on Core 0 -> %s\n", taskStatus == pdPASS ? "OK" : "FAILED");
 
     taskStatus = xTaskCreatePinnedToCore(serialTxTask, "serialTx", STACK_SERIAL_TX, nullptr, PRIO_SERIAL, nullptr, 0);
-    Serial.printf("[main] Spawn task 'serialTx' on Core 0 -> %s\n", taskStatus == pdPASS ? "OK" : "FAILED");
+    BOOT_LOG("[main] Spawn task 'serialTx' on Core 0 -> %s\n", taskStatus == pdPASS ? "OK" : "FAILED");
 
     taskStatus = xTaskCreatePinnedToCore(displayTask,  "display",  STACK_DISPLAY,   nullptr, PRIO_DISPLAY, nullptr, 0);
-    Serial.printf("[main] Spawn task 'display' on Core 0 -> %s\n", taskStatus == pdPASS ? "OK" : "FAILED");
+    BOOT_LOG("[main] Spawn task 'display' on Core 0 -> %s\n", taskStatus == pdPASS ? "OK" : "FAILED");
 
-    Serial.printf("[main] IP MTU: %u bytes (%u fragments x %u bytes)\n",
-                  IP_MTU, FRAMING_MAX_FRAGS, FRAMING_FRAG_DATA);
-    Serial.printf("[main] ARQ: %u rounds, ACK timeout %u ms, fallback ACK %u ms\n",
-                  RADIO_ARQ_MAX_ROUNDS, RADIO_ACK_TIMEOUT_MS, RADIO_ACK_FALLBACK_DELAY_MS);
-    Serial.println("[main] System initialization complete. KISS TNC operational.");
+    BOOT_LOG("[main] IP MTU: %u bytes (%u fragments x %u bytes)\n",
+             IP_MTU, FRAMING_MAX_FRAGS, FRAMING_FRAG_DATA);
+    BOOT_LOG("[main] ARQ: %u rounds, ACK timeout %u ms, fallback ACK %u ms\n",
+             RADIO_ARQ_MAX_ROUNDS, RADIO_ACK_TIMEOUT_MS, RADIO_ACK_FALLBACK_DELAY_MS);
+    BOOT_LOG_LN("[main] System initialization complete. KISS TNC operational.");
 }
 
 void loop() {

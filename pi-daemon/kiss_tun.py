@@ -118,8 +118,9 @@ class _KissState:
 class KissDecoder:
     """Stateful byte-stream KISS decoder."""
 
-    def __init__(self):
+    def __init__(self, mtu: int):
         self._state    = _KissState.IDLE
+        self._max_len  = mtu
         self._buf: bytearray = bytearray()
         self._overflow = False
 
@@ -135,44 +136,46 @@ class KissDecoder:
             elif self._state == _KissState.IN_FRAME:
                 if b == FEND:
                     if len(self._buf) == 0:
-                        # Empty delimiter: fresh start, no frame emitted.
+                        # Empty frame: ignore and require a fresh FEND.
                         self._overflow = False
+                        self._state = _KissState.IDLE
                     elif self._overflow:
-                        # Oversized frame: discard and start fresh candidate.
+                        # Oversized frame: discard and require a fresh FEND.
                         self._buf.clear()
                         self._overflow = False
+                        self._state = _KissState.IDLE
                     elif self._buf[0] != KISS_DATA_PORT:
-                        # Non-data port: discard silently.
+                        # Non-data port: discard silently and require a fresh FEND.
                         self._buf.clear()
                         self._overflow = False
+                        self._state = _KissState.IDLE
                     else:
                         # Valid data frame: emit payload (strip port byte).
                         payload = bytes(self._buf[1:])
                         self._buf.clear()
                         self._overflow = False
+                        self._state = _KissState.IDLE
                         yield (KISS_DATA_PORT, payload)
-                    # Trailing FEND closes this frame and opens the next candidate.
-                    # _state stays IN_FRAME.
                 elif b == FESC:
                     self._state = _KissState.ESCAPE
                 else:
-                    if len(self._buf) < DEFAULT_MTU + 1:
+                    if len(self._buf) < self._max_len + 1:
                         self._buf.append(b)
                     else:
                         self._overflow = True
 
             else:  # ESCAPE
-                if b == FEND:
-                    # FEND while in escape: invalid sequence, discard partial frame.
+                if b not in (TFEND, TFESC):
+                    # Invalid escape: discard partial frame and require a fresh FEND.
                     self._buf.clear()
                     self._overflow = False
-                    self._state    = _KissState.IN_FRAME
+                    self._state    = _KissState.IDLE
                 else:
                     if b == TFEND:
                         b = FEND
-                    elif b == TFESC:
+                    else:
                         b = FESC
-                    if len(self._buf) < DEFAULT_MTU + 1:
+                    if len(self._buf) < self._max_len + 1:
                         self._buf.append(b)
                     else:
                         self._overflow = True
@@ -205,9 +208,9 @@ def tun_to_radio(tun, ser, mtu: int, stop_event: threading.Event, debug_ip: bool
             stop_event.set()
 
 
-def radio_to_tun(tun, ser, stop_event: threading.Event, debug_ip: bool):
+def radio_to_tun(tun, ser, mtu: int, stop_event: threading.Event, debug_ip: bool):
     """Read KISS frames from serial and inject IP packets into tun0."""
-    decoder = KissDecoder()
+    decoder = KissDecoder(mtu)
     while not stop_event.is_set():
         try:
             waiting = ser.in_waiting
@@ -246,7 +249,7 @@ def run_bridge(tun, ser, mtu: int, debug_ip: bool) -> threading.Event:
     """Start bridge threads; returns the stop_event they share."""
     stop = threading.Event()
     t1 = threading.Thread(target=tun_to_radio,  args=(tun, ser, mtu, stop, debug_ip), daemon=True)
-    t2 = threading.Thread(target=radio_to_tun,  args=(tun, ser, stop, debug_ip),      daemon=True)
+    t2 = threading.Thread(target=radio_to_tun,  args=(tun, ser, mtu, stop, debug_ip), daemon=True)
     t1.start()
     t2.start()
     t1.join()

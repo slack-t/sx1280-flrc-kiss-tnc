@@ -59,6 +59,11 @@
 // Fragmented packets use a 4-byte link header, so the host MTU must match IP_MTU.
 #define PACKET_MAX_LEN          127
 
+// ── Serial console / KISS transport discipline ──────────────────────────────
+// Set to 1 only when intentionally using the USB CDC port as a console rather
+// than as a pure KISS transport stream.
+#define SERIAL_CONSOLE_LOGS     0
+
 // ── FreeRTOS queue depths ────────────────────────────────────────────────────
 #define TX_QUEUE_DEPTH          8
 #define RX_QUEUE_DEPTH          8
