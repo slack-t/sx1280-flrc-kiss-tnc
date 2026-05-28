@@ -122,6 +122,44 @@ class ModemClient:
         raise TimeoutError("no response from TNC")
 
 
+def validate_field(key: str, value: str) -> str | None:
+    """Return an error string if value is invalid for key, None if valid."""
+    try:
+        if key == "freq":
+            f = float(value)
+            if not (2400.0 <= f <= 2500.0):
+                return "freq must be 2400.0..2500.0 MHz"
+        elif key == "bitrate":
+            allowed = {260, 325, 520, 650, 1040, 1300}
+            if round(float(value)) not in allowed:
+                return f"bitrate must be one of: {', '.join(str(v) for v in sorted(allowed))}"
+        elif key == "cr":
+            if int(value) not in {2, 3, 4}:
+                return "cr must be 2 (1/2), 3 (3/4), or 4 (uncoded)"
+        elif key == "power":
+            p = int(value)
+            if not (-18 <= p <= 13):
+                return "power must be -18..13 dBm"
+        elif key == "preamble":
+            allowed = {4, 8, 12, 16, 20, 24, 28, 32}
+            if int(value) not in allowed:
+                return f"preamble must be one of: {', '.join(str(v) for v in sorted(allowed))}"
+        elif key == "bt":
+            if int(value) not in {0, 1}:
+                return "bt must be 0 (BT 0.5) or 1 (BT 1.0)"
+        elif key == "sync":
+            if len(value) != 8 or not all(c in "0123456789abcdefABCDEF" for c in value):
+                return "sync must be exactly 8 hex characters (e.g. 7ec5a23d)"
+        elif key == "lbt":
+            int(value)  # must be a valid integer
+        elif key == "transport":
+            if value.lower() not in {"native", "generic"}:
+                return "transport must be 'native' or 'generic'"
+    except (ValueError, TypeError):
+        return f"invalid value for {key}"
+    return None
+
+
 def parse_config(response: str) -> dict[str, str]:
     if not response.startswith("OK "):
         raise RuntimeError(response)
@@ -175,8 +213,13 @@ def run_tui(stdscr, client: ModemClient):
             selected = (selected + 1) % len(FIELDS)
         elif key in (10, 13):
             field, label, _ = FIELDS[selected]
-            values[field] = prompt(stdscr, 16, label, values.get(field, ""))
-            status = f"Edited {field}; press s to apply."
+            new_value = prompt(stdscr, 16, label, values.get(field, ""))
+            err = validate_field(field, new_value)
+            if err:
+                status = f"Invalid: {err}"
+            else:
+                values[field] = new_value
+                status = f"Edited {field}; press s to apply."
         elif key == ord("r"):
             try:
                 values = parse_config(client.command("GET"))
@@ -190,12 +233,20 @@ def run_tui(stdscr, client: ModemClient):
             except Exception as exc:
                 status = f"Defaults failed: {exc}"
         elif key == ord("s"):
-            command = "SET " + " ".join(f"{key}={values.get(key, '')}" for key, _, _ in FIELDS)
-            try:
-                status = client.command(command)
-                values = parse_config(client.command("GET"))
-            except Exception as exc:
-                status = f"Save failed: {exc}"
+            errors = [
+                f"{k}: {validate_field(k, values.get(k, ''))}"
+                for k, _, _ in FIELDS
+                if validate_field(k, values.get(k, "")) is not None
+            ]
+            if errors:
+                status = f"Fix before saving — {errors[0]}"
+            else:
+                command = "SET " + " ".join(f"{k}={values.get(k, '')}" for k, _, _ in FIELDS)
+                try:
+                    status = client.command(command)
+                    values = parse_config(client.command("GET"))
+                except Exception as exc:
+                    status = f"Save failed: {exc}"
 
 
 def main():
