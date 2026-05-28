@@ -37,6 +37,7 @@
 static Radio   radio;
 static Display display;
 static ModemConfig modemConfig;
+static ModemConfigSource modemConfigSource = ModemConfigSource::DEFAULTS;
 
 static QueueHandle_t txQueue;   // PayloadFrame: SerialRX → RadioTX
 static QueueHandle_t rxQueue;   // PayloadFrame: RadioRX  → SerialTX
@@ -47,6 +48,18 @@ static void refreshModemStats() {
     sm.lock();
     sm.get().freqMHz     = modemConfig.freqMHz;
     sm.get().bitrateKbps = static_cast<uint32_t>(modemConfig.bitrateKbps);
+    sm.get().codingRate  = modemConfig.codingRate;
+    sm.get().txPowerDbm  = modemConfig.txPowerDbm;
+    sm.get().preambleBits = modemConfig.preambleBits;
+    sm.get().btShaping   = (modemConfig.shaping == RADIOLIB_SHAPING_0_5) ? 0u : 1u;
+    sm.get().syncWord =
+        (static_cast<uint32_t>(modemConfig.syncWord[0]) << 24) |
+        (static_cast<uint32_t>(modemConfig.syncWord[1]) << 16) |
+        (static_cast<uint32_t>(modemConfig.syncWord[2]) << 8) |
+        static_cast<uint32_t>(modemConfig.syncWord[3]);
+    sm.get().configCrc16 = modemConfigChecksum(modemConfig);
+    sm.get().configVersion = MODEM_CONFIG_PROTOCOL_VERSION;
+    sm.get().configSource = static_cast<uint8_t>(modemConfigSource);
     sm.unlock();
 }
 
@@ -209,6 +222,15 @@ static bool parseIntValue(const char* value, long& out) {
     return true;
 }
 
+static bool modemResetButtonHeld() {
+    pinMode(MODEM_RESET_BUTTON_PIN, INPUT_PULLUP);
+    if (digitalRead(MODEM_RESET_BUTTON_PIN) != LOW) {
+        return false;
+    }
+    delay(25);
+    return digitalRead(MODEM_RESET_BUTTON_PIN) == LOW;
+}
+
 static void handleControlCommand(const uint8_t* data, uint16_t len) {
     char cmd[256];
     if (len >= sizeof(cmd)) {
@@ -227,9 +249,14 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
 
     if (strcasecmp(verb, "GET") == 0) {
         char body[192];
-        char response[224];
+        char response[255];
         modemFormatConfig(modemConfig, body, sizeof(body));
-        snprintf(response, sizeof(response), "OK %s", body);
+        snprintf(response, sizeof(response),
+                 "OK ver=%u cfgcrc=%04x source=%s %s",
+                 MODEM_CONFIG_PROTOCOL_VERSION,
+                 modemConfigChecksum(modemConfig),
+                 modemConfigSourceName(modemConfigSource),
+                 body);
         sendControlResponse(response);
         return;
     }
@@ -245,6 +272,7 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
         }
         modemConfig = next;
         modemSaveConfig(modemConfig);
+        modemConfigSource = ModemConfigSource::DEFAULTS;
         refreshModemStats();
         sendControlResponse("OK defaults applied");
         return;
@@ -340,6 +368,7 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
         sendControlResponse("ERR save failed");
         return;
     }
+    modemConfigSource = ModemConfigSource::NVS;
     refreshModemStats();
     sendControlResponse("OK saved");
 }
@@ -914,8 +943,18 @@ void setup() {
     // Populate initial stats with config values
     {
         BOOT_LOG_LN("[main] Initializing statistics tracker...");
-        modemLoadConfig(modemConfig);
+        if (modemResetButtonHeld()) {
+            BOOT_LOG_LN("[main] GPIO0 held low: clearing persisted modem config.");
+            modemClearConfig();
+            modemConfig = modemDefaultConfig();
+            modemConfigSource = ModemConfigSource::RESET_HELD;
+        } else {
+            modemConfigSource = modemLoadConfig(modemConfig);
+        }
         refreshModemStats();
+        BOOT_LOG("[main] Active modem config source=%s crc=%04x\n",
+                 modemConfigSourceName(modemConfigSource),
+                 modemConfigChecksum(modemConfig));
         BOOT_LOG_LN("[main] Statistics tracker ready.");
     }
 

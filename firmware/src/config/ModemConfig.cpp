@@ -11,20 +11,20 @@ ModemConfig modemDefaultConfig() {
     return ModemConfig{};
 }
 
-bool modemLoadConfig(ModemConfig& cfg) {
+ModemConfigSource modemLoadConfig(ModemConfig& cfg) {
     Preferences prefs;
     if (!prefs.begin(NVS_NAMESPACE, true)) {
         cfg = modemDefaultConfig();
-        return false;
+        return ModemConfigSource::DEFAULTS;
     }
     const size_t got = prefs.getBytes(NVS_KEY, &cfg, sizeof(cfg));
     prefs.end();
     char error[64];
     if (got != sizeof(cfg) || cfg.magic != MODEM_CONFIG_MAGIC || !modemValidateConfig(cfg, error, sizeof(error))) {
         cfg = modemDefaultConfig();
-        return false;
+        return ModemConfigSource::DEFAULTS;
     }
-    return true;
+    return ModemConfigSource::NVS;
 }
 
 bool modemSaveConfig(const ModemConfig& cfg) {
@@ -111,4 +111,33 @@ void modemFormatConfig(const ModemConfig& cfg, char* out, size_t outLen) {
              cfg.shaping == RADIOLIB_SHAPING_0_5 ? 0u : 1u,
              sync,
              cfg.lbtRssiThresholdDbm);
+}
+
+uint16_t modemConfigChecksum(const ModemConfig& cfg) {
+    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(&cfg);
+    const size_t len = sizeof(cfg);
+    uint16_t crc = 0xFFFFu;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= static_cast<uint16_t>(bytes[i]) << 8;
+        for (uint8_t bit = 0; bit < 8; bit++) {
+            if (crc & 0x8000u) {
+                crc = static_cast<uint16_t>((crc << 1) ^ 0x1021u);
+            } else {
+                crc <<= 1;
+            }
+        }
+    }
+    return crc;
+}
+
+const char* modemConfigSourceName(ModemConfigSource source) {
+    switch (source) {
+        case ModemConfigSource::NVS:
+            return "nvs";
+        case ModemConfigSource::RESET_HELD:
+            return "reset-held";
+        case ModemConfigSource::DEFAULTS:
+        default:
+            return "defaults";
+    }
 }

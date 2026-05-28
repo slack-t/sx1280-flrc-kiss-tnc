@@ -50,6 +50,14 @@ struct Stats {
     RadioState radioState = RadioState::IDLE;
     float    freqMHz     = 0.0f;
     uint32_t bitrateKbps = 0;
+    uint8_t  codingRate  = 0;
+    int8_t   txPowerDbm  = 0;
+    uint8_t  preambleBits = 0;
+    uint8_t  btShaping   = 0;
+    uint32_t syncWord    = 0;
+    uint16_t configCrc16 = 0;
+    uint8_t  configVersion = 0;
+    uint8_t  configSource = 0;
 };
 
 // Singleton wrapper with a FreeRTOS mutex.

@@ -5,6 +5,13 @@
 #include "../config.h"
 
 static constexpr uint32_t MODEM_CONFIG_MAGIC = 0x464c5243u; // "FLRC"
+static constexpr uint8_t MODEM_CONFIG_PROTOCOL_VERSION = 1;
+
+enum class ModemConfigSource : uint8_t {
+    DEFAULTS = 0,
+    NVS = 1,
+    RESET_HELD = 2,
+};
 
 struct ModemConfig {
     uint32_t magic = MODEM_CONFIG_MAGIC;
@@ -19,10 +26,12 @@ struct ModemConfig {
 };
 
 ModemConfig modemDefaultConfig();
-bool modemLoadConfig(ModemConfig& cfg);
+ModemConfigSource modemLoadConfig(ModemConfig& cfg);
 bool modemSaveConfig(const ModemConfig& cfg);
 void modemClearConfig();
 bool modemValidateConfig(const ModemConfig& cfg, char* error, size_t errorLen);
 void modemFormatConfig(const ModemConfig& cfg, char* out, size_t outLen);
 bool modemParseSyncWord(const char* text, uint8_t out[RADIO_SYNC_WORD_LEN]);
 void modemFormatSyncWord(const uint8_t sync[RADIO_SYNC_WORD_LEN], char* out, size_t outLen);
+uint16_t modemConfigChecksum(const ModemConfig& cfg);
+const char* modemConfigSourceName(ModemConfigSource source);

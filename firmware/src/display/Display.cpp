@@ -1,4 +1,5 @@
 #include "Display.h"
+#include "../config/ModemConfig.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -111,7 +112,7 @@ void Display::update(const Stats& s) {
     _sprite.setTextColor(TFT_WHITE, TFT_BLACK);
     char buf[32];
 
-    const uint8_t page = static_cast<uint8_t>((now / 3000) % 3);
+    const uint8_t page = static_cast<uint8_t>((now / 3000) % 4);
 
     if (page == 1) {
         snprintf(buf, sizeof(buf), "AT:%lu", s.arqAckTimeoutCount);
@@ -181,6 +182,34 @@ void Display::update(const Stats& s) {
 
         snprintf(buf, sizeof(buf), "LN:%u", s.lastPacketLength);
         _sprite.setCursor(68, 51);
+        _sprite.print(buf);
+
+        _sprite.pushSprite(&_lcd, 0, 0);
+        return;
+    }
+
+    if (page == 3) {
+        const char* source = "DEF";
+        if (s.configSource == static_cast<uint8_t>(ModemConfigSource::NVS)) {
+            source = "NVS";
+        } else if (s.configSource == static_cast<uint8_t>(ModemConfigSource::RESET_HELD)) {
+            source = "RST";
+        }
+
+        snprintf(buf, sizeof(buf), "CR:%u P:%d", s.codingRate, s.txPowerDbm);
+        _sprite.setCursor(2, 15);
+        _sprite.print(buf);
+
+        snprintf(buf, sizeof(buf), "PR:%u BT:%u", s.preambleBits, s.btShaping);
+        _sprite.setCursor(2, 27);
+        _sprite.print(buf);
+
+        snprintf(buf, sizeof(buf), "SW:%08lx", static_cast<unsigned long>(s.syncWord));
+        _sprite.setCursor(2, 39);
+        _sprite.print(buf);
+
+        snprintf(buf, sizeof(buf), "V:%u %s C:%04x", s.configVersion, source, s.configCrc16);
+        _sprite.setCursor(2, 51);
         _sprite.print(buf);
 
         _sprite.pushSprite(&_lcd, 0, 0);

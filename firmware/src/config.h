@@ -21,6 +21,11 @@
 // ── Battery ADC ──────────────────────────────────────────────────────────────
 #define BATTERY_ADC_PIN 1
 
+// ── Boot-time control pins ───────────────────────────────────────────────────
+// Hold GPIO0 low during boot to clear the persisted modem config and force
+// the built-in defaults for this session.
+#define MODEM_RESET_BUTTON_PIN 0
+
 // ── FLRC radio parameters ────────────────────────────────────────────────────
 // Operating frequency: 2480 MHz (above WiFi channel 13 in EU band plans)
 #define RADIO_FREQ_MHZ          2480.0f
