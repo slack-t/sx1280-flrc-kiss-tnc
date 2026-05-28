@@ -790,9 +790,9 @@ static void radioTxTask(void*) {
 // ── Task: Serial RX ───────────────────────────────────────────────────────────
 // Reads KISS bytes from USB CDC, decodes frames, pushes to txQueue.
 static void serialRxTask(void*) {
-    Kiss     decoder;
-    KissFrame kissFrame;
-    IpFrame  frame;
+    static Kiss     decoder;
+    static KissFrame kissFrame;
+    static IpFrame  frame;
     uint32_t last_rx_ms = 0;
 
     for (;;) {

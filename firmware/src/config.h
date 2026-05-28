@@ -84,8 +84,8 @@
 // ── Task stack sizes (bytes) ─────────────────────────────────────────────────
 #define STACK_RADIO_RX          4096
 #define STACK_RADIO_TX          4096
-#define STACK_SERIAL_RX         4096
-#define STACK_SERIAL_TX         4096
+#define STACK_SERIAL_RX         8192
+#define STACK_SERIAL_TX         8192
 #define STACK_DISPLAY           8192
 
 // ── Task priorities ──────────────────────────────────────────────────────────

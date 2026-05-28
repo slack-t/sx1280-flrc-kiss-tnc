@@ -82,17 +82,15 @@ class KissDecoder:
 class ModemClient:
     def __init__(self, port: str, baud: int, timeout: float,
                  boot_wait: float, retries: int):
-        # Configure control lines before opening. Opening the ESP32-S3 USB CDC
-        # device can reset the board if the OS/driver asserts DTR/RTS first.
-        self.ser = serial.Serial()
-        self.ser.port = port
-        self.ser.baudrate = baud
-        self.ser.timeout = 0
-        self.ser.rtscts = False
-        self.ser.dsrdtr = False
-        self.ser.dtr = False
-        self.ser.rts = False
-        self.ser.open()
+        # Open port cleanly without touching DTR/RTS lines after opening
+        # to avoid double resets or toggling ESP32-S3 EN/IO0 pins.
+        self.ser = serial.Serial(
+            port=port,
+            baudrate=baud,
+            timeout=0,
+            rtscts=False,
+            dsrdtr=False
+        )
         if boot_wait > 0:
             time.sleep(boot_wait)
         self.ser.reset_input_buffer()
