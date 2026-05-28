@@ -1,8 +1,9 @@
 # Runtime Modem Configuration TUI
 
 The firmware supports private KISS control frames on command byte `0x0F`.
-This keeps the normal KISS data stream clean while allowing the host to read,
-apply, and persist SX1280 FLRC modem settings without rebuilding firmware.
+Normal opaque data traffic stays on KISS command `0x00`. This keeps the data
+path generic while allowing the host to read, apply, and persist SX1280 FLRC
+modem settings without rebuilding firmware.
 
 Stop `kiss_tun` before using the TUI because both tools need exclusive access
 to the same serial port:

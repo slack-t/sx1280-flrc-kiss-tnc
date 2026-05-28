@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-kiss_tun.py — KISS TNC ↔ Linux TUN bridge
+kiss_tun.py — Optional IP/TUN adapter over the generic KISS TNC
 
-Reads KISS frames from the T3S3 over USB CDC (/dev/ttyACM0) and injects the
-payload as raw IP packets into a Linux tun interface, and vice versa.
+Reads KISS data frames from the T3S3 over USB CDC (/dev/ttyACM0) and injects
+the payload as raw IP packets into a Linux tun interface, and vice versa.
 
 Usage:
     sudo python3 kiss_tun.py --port /dev/ttyACM0 --addr 10.0.0.1/30
@@ -30,9 +30,13 @@ TFEND = 0xDC
 TFESC = 0xDD
 KISS_DATA_PORT = 0x00
 
-# IP MTU after layer-2 fragmentation/reassembly with a 4-byte radio link header.
-# Must match firmware IP_MTU = FRAMING_MAX_FRAGS * (PACKET_MAX_LEN - 4) = 492.
-DEFAULT_MTU = 492
+# Firmware payload cap for opaque KISS frames.
+FIRMWARE_PAYLOAD_CAP = 1024
+
+# Conservative default for the optional IP adapter. This stays below the
+# firmware payload cap and avoids pushing normal IP traffic straight into the
+# larger multi-fragment regimes by default.
+DEFAULT_MTU = 246
 
 # Seconds to wait before retrying a lost serial connection
 RECONNECT_DELAY_S = 5
@@ -212,7 +216,7 @@ class KissDecoder:
 
 def tun_to_radio(tun, ser, mtu: int, stop_event: threading.Event, debug_ip: bool,
                  quiet: bool, trace: TraceLogger):
-    """Read IP packets from tun0 and send as KISS frames over serial."""
+    """Read IP packets from tun0 and send them as KISS data frames."""
     while not stop_event.is_set():
         try:
             r, _, _ = select.select([tun], [], [], 0.1)
@@ -244,7 +248,7 @@ def tun_to_radio(tun, ser, mtu: int, stop_event: threading.Event, debug_ip: bool
 
 def radio_to_tun(tun, ser, mtu: int, stop_event: threading.Event, debug_ip: bool,
                  quiet: bool, trace: TraceLogger):
-    """Read KISS frames from serial and inject IP packets into tun0."""
+    """Read KISS data frames from serial and inject IP packets into tun0."""
     decoder = KissDecoder(mtu)
     while not stop_event.is_set():
         try:
@@ -301,7 +305,9 @@ def run_bridge(tun, ser, mtu: int, debug_ip: bool, quiet: bool,
 
 
 def main():
-    parser = argparse.ArgumentParser(description="KISS TNC ↔ tun0 bridge for SX1280 FLRC TNC")
+    parser = argparse.ArgumentParser(
+        description="Optional IP/TUN adapter over the generic SX1280 KISS TNC"
+    )
     parser.add_argument("--port",  default="/dev/ttyACM0",
                         help="Serial port (default: /dev/ttyACM0)")
     parser.add_argument("--baud",  type=int, default=921600,
@@ -309,7 +315,10 @@ def main():
     parser.add_argument("--addr",  required=True,
                         help="IP/prefix for tun interface, e.g. 10.0.0.1/30")
     parser.add_argument("--mtu",   type=int, default=DEFAULT_MTU,
-                        help=f"MTU (default: {DEFAULT_MTU}, must match firmware IP_MTU)")
+                        help=(
+                            f"Adapter MTU (default: {DEFAULT_MTU}, must be <= "
+                            f"firmware payload cap {FIRMWARE_PAYLOAD_CAP})"
+                        ))
     parser.add_argument("--name",  default="tun0",
                         help="TUN interface name (default: tun0)")
     parser.add_argument("--debug-ip", action="store_true",

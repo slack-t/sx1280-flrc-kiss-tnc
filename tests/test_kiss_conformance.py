@@ -8,7 +8,16 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 PI_DAEMON_DIR = REPO_ROOT / "pi-daemon"
 sys.path.insert(0, str(PI_DAEMON_DIR))
 
-from kiss_tun import FEND, FESC, TFEND, TFESC, KISS_DATA_PORT, KissDecoder, kiss_encode
+from kiss_tun import (
+    FIRMWARE_PAYLOAD_CAP,
+    FEND,
+    FESC,
+    TFEND,
+    TFESC,
+    KISS_DATA_PORT,
+    KissDecoder,
+    kiss_encode,
+)
 
 
 def hx(hex_bytes: str) -> bytes:
@@ -63,7 +72,11 @@ class KissConformanceTests(unittest.TestCase):
         payload = bytes((i & 0xFF) for i in range(369))
         noise_prefix = hx("23 24 25 26 27 28 29 2a 2b 2c 2d 2e 2f 30 31 32")
         encoded = kiss_encode(payload)
-        outputs = self.decode_stream(noise_prefix + encoded, mtu=492, chunk_sizes=[1, 7, 19, 3, 64, 11, 5, 128, 17, 256])
+        outputs = self.decode_stream(
+            noise_prefix + encoded,
+            mtu=FIRMWARE_PAYLOAD_CAP,
+            chunk_sizes=[1, 7, 19, 3, 64, 11, 5, 128, 17, 256],
+        )
         self.assertEqual(outputs, [(KISS_DATA_PORT, payload)])
 
     def test_invalid_escape_discards_partial_frame_and_requires_fresh_fend(self):

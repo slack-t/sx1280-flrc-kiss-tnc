@@ -1,5 +1,5 @@
 [Unit]
-Description=High-Performance Rust KISS TNC ↔ tun0 bridge (SX1280 FLRC TNC)
+Description=Optional Rust IP/TUN adapter for the SX1280 KISS TNC
 After=network.target
 Wants=network.target
 

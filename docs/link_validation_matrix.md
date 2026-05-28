@@ -1,5 +1,9 @@
 # FLRC Link Validation Matrix
 
+This matrix validates the optional IP/TUN adapter path. The firmware itself is
+a generic KISS TNC and can also be exercised directly with
+`pi-daemon/raw_kiss.py`.
+
 This matrix validates the link in layers: KISS transport, single-packet latency,
 fragment-count behavior, and sustained UDP load. Run each test on a quiet bench
 setup with both nodes flashed from the same commit.
@@ -9,7 +13,7 @@ setup with both nodes flashed from the same commit.
 Use the quiet bridge mode for benchmark runs:
 
 ```sh
-python pi-daemon/kiss_tun.py --port /dev/ttyACM0 --addr 10.0.0.1/30 --mtu 246 --quiet
+python3 pi-daemon/kiss_tun.py --port /dev/ttyACM0 --addr 10.0.0.1/30 --mtu 246 --quiet
 ```
 
 Equivalent Rust bridge command:
@@ -21,7 +25,7 @@ pi-daemon-rust/target/release/kiss-tun-rs --port /dev/ttyACM0 --addr 10.0.0.1/30
 On the peer, use the matching address:
 
 ```sh
-python pi-daemon/kiss_tun.py --port /dev/ttyACM0 --addr 10.0.0.2/30 --mtu 246 --quiet
+python3 pi-daemon/kiss_tun.py --port /dev/ttyACM0 --addr 10.0.0.2/30 --mtu 246 --quiet
 ```
 
 Equivalent Rust peer command:

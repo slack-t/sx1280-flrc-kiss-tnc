@@ -13,7 +13,12 @@ use tun_rs::DeviceBuilder;
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "KISS TNC ↔ tun0 bridge in Rust", long_about = None)]
+#[command(
+    author,
+    version,
+    about = "Optional IP/TUN adapter over the generic KISS TNC in Rust",
+    long_about = None
+)]
 struct Args {
     #[arg(long, default_value = "/dev/ttyACM0", help = "Serial port")]
     port: String,
@@ -24,7 +29,11 @@ struct Args {
     #[arg(long, help = "IP/prefix for tun interface, e.g. 10.0.0.1/30")]
     addr: String,
 
-    #[arg(long, default_value_t = 492, help = "MTU, must match firmware IP_MTU")]
+    #[arg(
+        long,
+        default_value_t = 246,
+        help = "Adapter MTU (must be <= firmware payload cap 1024)"
+    )]
     mtu: u16,
 
     #[arg(long, default_value = "tun0", help = "TUN interface name")]
