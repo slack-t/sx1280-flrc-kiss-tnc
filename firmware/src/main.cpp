@@ -119,6 +119,20 @@ static void noteRadioRxInvalidLength() {
     sm.unlock();
 }
 
+static void noteRadioRxCrcError() {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    sm.get().rxCrcErrorCount++;
+    sm.unlock();
+}
+
+static void noteRadioRxHeaderError() {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    sm.get().rxHeaderErrorCount++;
+    sm.unlock();
+}
+
 static void noteRadioRxReadDataError() {
     auto& sm = StatsManager::instance();
     sm.lock();
@@ -312,7 +326,12 @@ static void radioRxTask(void*) {
             continue;
         }
         if (err != RADIOLIB_ERR_NONE || pkt.len < 1) {
-            if (err == ERR_INVALID_PACKET_LEN || pkt.len < 1) {
+            const uint16_t irq = radio.lastIrqStatus();
+            if (err == RADIOLIB_ERR_CRC_MISMATCH || (irq & RADIOLIB_SX128X_IRQ_CRC_ERROR)) {
+                noteRadioRxCrcError();
+            } else if (irq & RADIOLIB_SX128X_IRQ_HEADER_ERROR) {
+                noteRadioRxHeaderError();
+            } else if (err == ERR_INVALID_PACKET_LEN || (err == RADIOLIB_ERR_NONE && pkt.len < 1)) {
                 noteRadioRxInvalidLength();
             } else {
                 noteRadioRxReadDataError();

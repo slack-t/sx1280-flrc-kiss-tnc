@@ -159,15 +159,15 @@ void Display::update(const Stats& s) {
         _sprite.setCursor(68, 15);
         _sprite.print(buf);
 
-        snprintf(buf, sizeof(buf), "RD:%lu", s.rxReadDataErrorCount);
+        snprintf(buf, sizeof(buf), "CE:%lu", s.rxCrcErrorCount);
         _sprite.setCursor(2, 27);
         _sprite.print(buf);
 
-        snprintf(buf, sizeof(buf), "MA:%lu", s.rxMalformedAckCount);
+        snprintf(buf, sizeof(buf), "HE:%lu", s.rxHeaderErrorCount);
         _sprite.setCursor(68, 27);
         _sprite.print(buf);
 
-        snprintf(buf, sizeof(buf), "MD:%lu", s.rxMalformedDataCount);
+        snprintf(buf, sizeof(buf), "RD:%lu", s.rxReadDataErrorCount);
         _sprite.setCursor(2, 39);
         _sprite.print(buf);
 
