@@ -41,9 +41,13 @@ struct Stats {
     uint32_t rxInvalidLengthCount = 0;
     uint32_t rxCrcErrorCount     = 0;
     uint32_t rxHeaderErrorCount  = 0;
+    uint32_t rxSyncWordErrorCount = 0;
+    uint32_t rxTimeoutCount      = 0;
     uint32_t rxReadDataErrorCount = 0;
     uint32_t rxMalformedAckCount = 0;
     uint32_t rxMalformedDataCount = 0;
+    uint32_t kissMalformedFrameCount = 0;
+    uint32_t kissOversizeDropCount = 0;
     int16_t  lastRadioErr        = 0;
     uint16_t lastIrqStatus       = 0;
     uint16_t lastPacketLength    = 0;

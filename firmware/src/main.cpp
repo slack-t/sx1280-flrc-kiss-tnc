@@ -159,6 +159,20 @@ static void noteRadioRxHeaderError() {
     sm.unlock();
 }
 
+static void noteRadioRxSyncWordError() {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    sm.get().rxSyncWordErrorCount++;
+    sm.unlock();
+}
+
+static void noteRadioRxTimeout() {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    sm.get().rxTimeoutCount++;
+    sm.unlock();
+}
+
 static void noteRadioRxReadDataError() {
     auto& sm = StatsManager::instance();
     sm.lock();
@@ -177,6 +191,16 @@ static void noteMalformedData() {
     auto& sm = StatsManager::instance();
     sm.lock();
     sm.get().rxMalformedDataCount++;
+    sm.unlock();
+}
+
+static void noteKissMalformedFrame(bool oversize) {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    sm.get().kissMalformedFrameCount++;
+    if (oversize) {
+        sm.get().kissOversizeDropCount++;
+    }
     sm.unlock();
 }
 
@@ -525,9 +549,13 @@ static void radioRxTask(void*) {
         }
         if (err != RADIOLIB_ERR_NONE || pkt.len < 1) {
             const uint16_t irq = radio.lastIrqStatus();
-            if (err == RADIOLIB_ERR_CRC_MISMATCH || (irq & RADIOLIB_SX128X_IRQ_CRC_ERROR)) {
+            if (err == ERR_RX_TIMEOUT || (irq & RADIOLIB_SX128X_IRQ_RX_TX_TIMEOUT)) {
+                noteRadioRxTimeout();
+            } else if (err == ERR_SYNCWORD || (irq & RADIOLIB_SX128X_IRQ_SYNC_WORD_ERROR)) {
+                noteRadioRxSyncWordError();
+            } else if (err == RADIOLIB_ERR_CRC_MISMATCH || (irq & RADIOLIB_SX128X_IRQ_CRC_ERROR)) {
                 noteRadioRxCrcError();
-            } else if (irq & RADIOLIB_SX128X_IRQ_HEADER_ERROR) {
+            } else if (err == ERR_HEADER || (irq & RADIOLIB_SX128X_IRQ_HEADER_ERROR)) {
                 noteRadioRxHeaderError();
             } else if (err == ERR_INVALID_PACKET_LEN || (err == RADIOLIB_ERR_NONE && pkt.len < 1)) {
                 noteRadioRxInvalidLength();
@@ -816,32 +844,42 @@ static void serialRxTask(void*) {
             for (int i = 0; i < avail; i++) {
                 int c = Serial.read();
                 if (c < 0) break;
-                if (decoder.decodeFrame(static_cast<uint8_t>(c), kissFrame)) {
-                    if (kissFrame.command == KISS_CONTROL_FRAME) {
-                        handleControlCommand(kissFrame.data, kissFrame.len);
-                        continue;
-                    }
-                    if (kissFrame.command != KISS_DATA_FRAME) {
-                        continue;
-                    }
-                    memcpy(frame.data, kissFrame.data, kissFrame.len);
-                    frame.len = kissFrame.len;
-#if DEBUG_KISS_SERIAL_RX
-                    Serial.printf("[KISS RX] len=%u hex=", frame.len);
-                    for (int _i = 0; _i < 8 && _i < frame.len; _i++) {
-                        Serial.printf("%02x ", frame.data[_i]);
-                    }
-                    Serial.printf("\n");
-#endif
-                    // Block indefinitely on queue to apply backpressure to USB CDC
-                    if (uxQueueSpacesAvailable(txQueue) == 0) {
-                        auto& sm = StatsManager::instance();
-                        sm.lock();
-                        sm.get().txQueueWaitCount++;
-                        sm.unlock();
-                    }
-                    xQueueSend(txQueue, &frame, portMAX_DELAY);
+                const KissDecodeResult result = decoder.decodeFrameEx(static_cast<uint8_t>(c), kissFrame);
+                if (result == KissDecodeResult::OVERSIZE_DROP) {
+                    noteKissMalformedFrame(true);
+                    continue;
                 }
+                if (result == KissDecodeResult::INVALID_ESCAPE_DROP) {
+                    noteKissMalformedFrame(false);
+                    continue;
+                }
+                if (result != KissDecodeResult::FRAME) {
+                    continue;
+                }
+                if (kissFrame.command == KISS_CONTROL_FRAME) {
+                    handleControlCommand(kissFrame.data, kissFrame.len);
+                    continue;
+                }
+                if (kissFrame.command != KISS_DATA_FRAME) {
+                    continue;
+                }
+                memcpy(frame.data, kissFrame.data, kissFrame.len);
+                frame.len = kissFrame.len;
+#if DEBUG_KISS_SERIAL_RX
+                Serial.printf("[KISS RX] len=%u hex=", frame.len);
+                for (int _i = 0; _i < 8 && _i < frame.len; _i++) {
+                    Serial.printf("%02x ", frame.data[_i]);
+                }
+                Serial.printf("\n");
+#endif
+                // Block indefinitely on queue to apply backpressure to USB CDC
+                if (uxQueueSpacesAvailable(txQueue) == 0) {
+                    auto& sm = StatsManager::instance();
+                    sm.lock();
+                    sm.get().txQueueWaitCount++;
+                    sm.unlock();
+                }
+                xQueueSend(txQueue, &frame, portMAX_DELAY);
             }
         } else {
             // No bytes available right now.

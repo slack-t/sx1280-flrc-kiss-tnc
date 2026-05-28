@@ -41,7 +41,7 @@ size_t Kiss::encode(const PayloadFrame& frame, uint8_t* outBuf, size_t outBufLen
 
 bool Kiss::decode(uint8_t byte, PayloadFrame& frame) {
     KissFrame kissFrame;
-    if (!decodeFrame(byte, kissFrame)) {
+    if (decodeFrameEx(byte, kissFrame) != KissDecodeResult::FRAME) {
         return false;
     }
     if (kissFrame.command != KISS_DATA_FRAME) {
@@ -53,6 +53,10 @@ bool Kiss::decode(uint8_t byte, PayloadFrame& frame) {
 }
 
 bool Kiss::decodeFrame(uint8_t byte, KissFrame& frame) {
+    return decodeFrameEx(byte, frame) == KissDecodeResult::FRAME;
+}
+
+KissDecodeResult Kiss::decodeFrameEx(uint8_t byte, KissFrame& frame) {
     switch (_state) {
         case State::IDLE:
             if (byte == KISS_FEND) {
@@ -75,7 +79,7 @@ bool Kiss::decodeFrame(uint8_t byte, KissFrame& frame) {
                     _len      = 0;
                     _overflow = false;
                     _state    = State::IDLE;
-                    break;
+                    return KissDecodeResult::OVERSIZE_DROP;
                 }
                 // Valid KISS frame: emit command and payload (strip command byte).
                 uint16_t payloadLen = _len - 1;
@@ -87,7 +91,7 @@ bool Kiss::decodeFrame(uint8_t byte, KissFrame& frame) {
                 _len      = 0;
                 _overflow = false;
                 _state    = State::IDLE;
-                return true;
+                return KissDecodeResult::FRAME;
             } else if (byte == KISS_FESC) {
                 _state = State::ESCAPE;
             } else {
@@ -113,10 +117,11 @@ bool Kiss::decodeFrame(uint8_t byte, KissFrame& frame) {
                 _len      = 0;
                 _overflow = false;
                 _state    = State::IDLE;
+                return KissDecodeResult::INVALID_ESCAPE_DROP;
             }
             break;
     }
-    return false;
+    return KissDecodeResult::NONE;
 }
 
 void Kiss::reset() {

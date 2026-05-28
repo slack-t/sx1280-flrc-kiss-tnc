@@ -6,6 +6,9 @@
 
 #define ERR_SPURIOUS_IRQ -1000
 #define ERR_INVALID_PACKET_LEN -1001
+#define ERR_RX_TIMEOUT -1002
+#define ERR_SYNCWORD -1003
+#define ERR_HEADER -1004
 
 class Radio {
 public:

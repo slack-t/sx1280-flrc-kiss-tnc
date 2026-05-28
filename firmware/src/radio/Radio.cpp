@@ -80,7 +80,13 @@ void Radio::_startReceiveNoLock(bool forceReset) {
         // Reset preamble length before re-entering RX.
         _radio.setPreambleLength(_config.preambleBits);
     }
-    _radio.startReceive();
+    constexpr uint16_t rxIrqMask =
+        RADIOLIB_SX128X_IRQ_RX_DONE |
+        RADIOLIB_SX128X_IRQ_RX_TX_TIMEOUT |
+        RADIOLIB_SX128X_IRQ_CRC_ERROR |
+        RADIOLIB_SX128X_IRQ_HEADER_ERROR |
+        RADIOLIB_SX128X_IRQ_SYNC_WORD_ERROR;
+    _radio.startReceive(RADIOLIB_SX128X_RX_TIMEOUT_INF, rxIrqMask, rxIrqMask, 0);
 }
 
 void Radio::startReceive() {
@@ -114,6 +120,27 @@ int16_t Radio::readPacket(Packet& pkt) {
     // from leaving the radio deaf or triggering false reads.
     uint16_t irq = _radio.getIrqStatus();
     _lastIrqStatus = irq;
+    if ((irq & RADIOLIB_SX128X_IRQ_RX_TX_TIMEOUT) && !(irq & RADIOLIB_SX128X_IRQ_RX_DONE)) {
+        _lastPacketLength = 0;
+        _startReceiveNoLock(true);
+        xSemaphoreGive(_spiMutex);
+        _lastRadioErr = ERR_RX_TIMEOUT;
+        return ERR_RX_TIMEOUT;
+    }
+    if ((irq & RADIOLIB_SX128X_IRQ_SYNC_WORD_ERROR) && !(irq & RADIOLIB_SX128X_IRQ_RX_DONE)) {
+        _lastPacketLength = 0;
+        _startReceiveNoLock(true);
+        xSemaphoreGive(_spiMutex);
+        _lastRadioErr = ERR_SYNCWORD;
+        return ERR_SYNCWORD;
+    }
+    if ((irq & RADIOLIB_SX128X_IRQ_HEADER_ERROR) && !(irq & RADIOLIB_SX128X_IRQ_RX_DONE)) {
+        _lastPacketLength = 0;
+        _startReceiveNoLock(true);
+        xSemaphoreGive(_spiMutex);
+        _lastRadioErr = ERR_HEADER;
+        return ERR_HEADER;
+    }
     if (!(irq & RADIOLIB_SX128X_IRQ_RX_DONE)) {
         // Force the radio back into receive mode so it doesn't stay deaf.
         // _startReceiveNoLock(true) internally clears the chip's interrupt registers.

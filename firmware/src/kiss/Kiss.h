@@ -21,6 +21,13 @@ struct KissFrame {
     uint16_t len = 0;
 };
 
+enum class KissDecodeResult : uint8_t {
+    NONE = 0,
+    FRAME = 1,
+    OVERSIZE_DROP = 2,
+    INVALID_ESCAPE_DROP = 3,
+};
+
 class Kiss {
 public:
     // Encode an opaque payload frame into a KISS data frame.
@@ -32,6 +39,7 @@ public:
     // Returns true when a complete frame has been decoded into frame.
     bool decode(uint8_t byte, PayloadFrame& frame);
     bool decodeFrame(uint8_t byte, KissFrame& frame);
+    KissDecodeResult decodeFrameEx(uint8_t byte, KissFrame& frame);
 
     // Reset decoder state (e.g. on sync loss)
     void reset();

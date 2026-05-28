@@ -112,7 +112,7 @@ void Display::update(const Stats& s) {
     _sprite.setTextColor(TFT_WHITE, TFT_BLACK);
     char buf[32];
 
-    const uint8_t page = static_cast<uint8_t>((now / 3000) % 4);
+    const uint8_t page = static_cast<uint8_t>((now / 3000) % 5);
 
     if (page == 1) {
         snprintf(buf, sizeof(buf), "AT:%lu", s.arqAckTimeoutCount);
@@ -156,7 +156,7 @@ void Display::update(const Stats& s) {
         _sprite.setCursor(2, 15);
         _sprite.print(buf);
 
-        snprintf(buf, sizeof(buf), "IL:%lu", s.rxInvalidLengthCount);
+        snprintf(buf, sizeof(buf), "SW:%lu", s.rxSyncWordErrorCount);
         _sprite.setCursor(68, 15);
         _sprite.print(buf);
 
@@ -168,7 +168,7 @@ void Display::update(const Stats& s) {
         _sprite.setCursor(68, 27);
         _sprite.print(buf);
 
-        snprintf(buf, sizeof(buf), "RD:%lu", s.rxReadDataErrorCount);
+        snprintf(buf, sizeof(buf), "TO:%lu", s.rxTimeoutCount);
         _sprite.setCursor(2, 39);
         _sprite.print(buf);
 
@@ -210,6 +210,43 @@ void Display::update(const Stats& s) {
 
         snprintf(buf, sizeof(buf), "V:%u %s C:%04x", s.configVersion, source, s.configCrc16);
         _sprite.setCursor(2, 51);
+        _sprite.print(buf);
+
+        _sprite.pushSprite(&_lcd, 0, 0);
+        return;
+    }
+
+    if (page == 4) {
+        snprintf(buf, sizeof(buf), "IL:%lu", s.rxInvalidLengthCount);
+        _sprite.setCursor(2, 15);
+        _sprite.print(buf);
+
+        snprintf(buf, sizeof(buf), "RD:%lu", s.rxReadDataErrorCount);
+        _sprite.setCursor(68, 15);
+        _sprite.print(buf);
+
+        snprintf(buf, sizeof(buf), "MA:%lu", s.rxMalformedAckCount);
+        _sprite.setCursor(2, 27);
+        _sprite.print(buf);
+
+        snprintf(buf, sizeof(buf), "MD:%lu", s.rxMalformedDataCount);
+        _sprite.setCursor(68, 27);
+        _sprite.print(buf);
+
+        snprintf(buf, sizeof(buf), "KE:%lu", s.kissMalformedFrameCount);
+        _sprite.setCursor(2, 39);
+        _sprite.print(buf);
+
+        snprintf(buf, sizeof(buf), "KO:%lu", s.kissOversizeDropCount);
+        _sprite.setCursor(68, 39);
+        _sprite.print(buf);
+
+        snprintf(buf, sizeof(buf), "RE:%lu", s.radioRxErrors);
+        _sprite.setCursor(2, 51);
+        _sprite.print(buf);
+
+        snprintf(buf, sizeof(buf), "ER:%lu", s.errorCount);
+        _sprite.setCursor(68, 51);
         _sprite.print(buf);
 
         _sprite.pushSprite(&_lcd, 0, 0);
