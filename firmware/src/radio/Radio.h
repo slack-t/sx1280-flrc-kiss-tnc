@@ -2,6 +2,7 @@
 #include <RadioLib.h>
 #include "../config.h"
 #include "../kiss/Kiss.h"
+#include "../config/ModemConfig.h"
 
 #define ERR_SPURIOUS_IRQ -1000
 #define ERR_INVALID_PACKET_LEN -1001
@@ -10,7 +11,9 @@ class Radio {
 public:
     // Initialise SX1280 with FLRC parameters from config.h.
     // Returns RADIOLIB_ERR_NONE (0) on success, or a RadioLib error code on failure.
-    int16_t begin();
+    int16_t begin(const ModemConfig& config);
+    int16_t applyConfig(const ModemConfig& config);
+    const ModemConfig& config() const { return _config; }
 
     // Start continuous receive mode. DIO1 ISR will signal the rxSemaphore.
     void startReceive();
@@ -51,11 +54,13 @@ private:
     int16_t _lastRadioErr = RADIOLIB_ERR_NONE;
     uint16_t _lastIrqStatus = 0;
     uint16_t _lastPacketLength = 0;
+    ModemConfig _config;
 
     // SPI call without taking _spiMutex — use only when the mutex is already held.
     // forceReset=true (after TX or error): clears IRQ state fully.
     // forceReset=false (RX-to-RX): skips redundant re-init, faster turnaround.
     void _startReceiveNoLock(bool forceReset = false);
+    int16_t _applyConfigNoLock(const ModemConfig& config);
 
     static void IRAM_ATTR _dio1Isr();
 };

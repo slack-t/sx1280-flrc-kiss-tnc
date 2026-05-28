@@ -1,5 +1,6 @@
 #include "Radio.h"
 #include <SPI.h>
+#include <string.h>
 
 #if SERIAL_CONSOLE_LOGS
 #define SERIAL_LOG(...) Serial.printf(__VA_ARGS__)
@@ -11,7 +12,7 @@
 
 static Radio* _radioInstance = nullptr;
 
-int16_t Radio::begin() {
+int16_t Radio::begin(const ModemConfig& config) {
     _radioInstance = this;
 
     // Counting semaphore: multiple DIO1 edges (fragments arriving while radioRxTask
@@ -23,29 +24,12 @@ int16_t Radio::begin() {
     SERIAL_LOG("[radio] SPI started (SCK=%d MISO=%d MOSI=%d NSS=%d)\n",
                RADIO_SCK, RADIO_MISO, RADIO_MOSI, RADIO_NSS);
 
-    // RadioLib 6.x beginFLRC: (freq_MHz, bitrate_kbps, cr, power_dBm, preamble_bits, BT)
-    // Sync word is NOT a parameter — set separately via setSyncWord() below.
-    int16_t state = _radio.beginFLRC(
-        RADIO_FREQ_MHZ,
-        RADIO_BITRATE_KBPS,
-        RADIO_CODING_RATE,
-        TX_POWER_DBM,
-        RADIO_PREAMBLE_BITS,
-        RADIO_BT
-    );
+    int16_t state = _applyConfigNoLock(config);
     if (state != RADIOLIB_ERR_NONE) {
         SERIAL_LOG("[radio] beginFLRC failed! Error code: %d\n", state);
         return state;
     }
     SERIAL_LOG_LN("[radio] beginFLRC -> OK");
-
-    uint8_t syncWord[] = RADIO_SYNC_WORD_BYTES;
-    state = _radio.setSyncWord(syncWord, RADIO_SYNC_WORD_LEN);
-    if (state != RADIOLIB_ERR_NONE) {
-        SERIAL_LOG("[radio] setSyncWord failed! Error code: %d\n", state);
-        return state;
-    }
-    SERIAL_LOG_LN("[radio] setSyncWord -> OK");
 
     // DIO1 fires on both RX done and TX done. The ISR guards against the
     // TX-done pulse with _txActive so only genuine RX events wake radioRxTask.
@@ -55,11 +39,46 @@ int16_t Radio::begin() {
     return RADIOLIB_ERR_NONE;
 }
 
+int16_t Radio::_applyConfigNoLock(const ModemConfig& config) {
+    // RadioLib 6.x beginFLRC: (freq_MHz, bitrate_kbps, cr, power_dBm, preamble_bits, BT)
+    int16_t state = _radio.beginFLRC(
+        config.freqMHz,
+        config.bitrateKbps,
+        config.codingRate,
+        config.txPowerDbm,
+        config.preambleBits,
+        config.shaping
+    );
+    if (state != RADIOLIB_ERR_NONE) {
+        return state;
+    }
+    uint8_t syncWord[RADIO_SYNC_WORD_LEN];
+    memcpy(syncWord, config.syncWord, sizeof(syncWord));
+    state = _radio.setSyncWord(syncWord, RADIO_SYNC_WORD_LEN);
+    if (state != RADIOLIB_ERR_NONE) {
+        return state;
+    }
+    _config = config;
+    return RADIOLIB_ERR_NONE;
+}
+
+int16_t Radio::applyConfig(const ModemConfig& config) {
+    xSemaphoreTake(_spiMutex, portMAX_DELAY);
+    _txActive = true;
+    int16_t state = _applyConfigNoLock(config);
+    if (state == RADIOLIB_ERR_NONE) {
+        _startReceiveNoLock(true);
+    }
+    _txActive = false;
+    xSemaphoreGive(_spiMutex);
+    return state;
+}
+
 void Radio::_startReceiveNoLock(bool forceReset) {
     if (forceReset) {
         // After TX or error: SX1280 packet params may have been altered.
         // Reset preamble length before re-entering RX.
-        _radio.setPreambleLength(RADIO_PREAMBLE_BITS);
+        _radio.setPreambleLength(_config.preambleBits);
     }
     _radio.startReceive();
 }
@@ -154,7 +173,7 @@ bool Radio::isChannelBusy() {
     delayMicroseconds(RADIO_LBT_SENSE_US);
     float rssi = _radio.getRSSI();
     xSemaphoreGive(_spiMutex);
-    return rssi > (float)RADIO_LBT_RSSI_THRESHOLD_DBM;
+    return _config.lbtRssiThresholdDbm != 0 && rssi > (float)_config.lbtRssiThresholdDbm;
 }
 
 void IRAM_ATTR Radio::_dio1Isr() {

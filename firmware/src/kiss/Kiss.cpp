@@ -1,10 +1,11 @@
 #include "Kiss.h"
 #include <string.h>
 
-size_t Kiss::encode(const IpFrame& frame, uint8_t* outBuf, size_t outBufLen) {
+size_t Kiss::encodeFrame(uint8_t command, const uint8_t* payload, uint16_t payloadLen,
+                         uint8_t* outBuf, size_t outBufLen) {
     size_t requiredLen = 3; // FEND + port + trailing FEND
-    for (uint16_t n = 0; n < frame.len; n++) {
-        uint8_t b = frame.data[n];
+    for (uint16_t n = 0; n < payloadLen; n++) {
+        uint8_t b = payload[n];
         requiredLen += (b == KISS_FEND || b == KISS_FESC) ? 2u : 1u;
     }
     if (requiredLen > outBufLen) {
@@ -15,10 +16,10 @@ size_t Kiss::encode(const IpFrame& frame, uint8_t* outBuf, size_t outBufLen) {
     auto write = [&](uint8_t b) { outBuf[i++] = b; };
 
     write(KISS_FEND);
-    write(KISS_DATA_FRAME);
+    write(command);
 
-    for (uint16_t n = 0; n < frame.len; n++) {
-        uint8_t b = frame.data[n];
+    for (uint16_t n = 0; n < payloadLen; n++) {
+        uint8_t b = payload[n];
         if (b == KISS_FEND) {
             write(KISS_FESC);
             write(KISS_TFEND);
@@ -34,7 +35,24 @@ size_t Kiss::encode(const IpFrame& frame, uint8_t* outBuf, size_t outBufLen) {
     return i;
 }
 
+size_t Kiss::encode(const IpFrame& frame, uint8_t* outBuf, size_t outBufLen) {
+    return encodeFrame(KISS_DATA_FRAME, frame.data, frame.len, outBuf, outBufLen);
+}
+
 bool Kiss::decode(uint8_t byte, IpFrame& frame) {
+    KissFrame kissFrame;
+    if (!decodeFrame(byte, kissFrame)) {
+        return false;
+    }
+    if (kissFrame.command != KISS_DATA_FRAME) {
+        return false;
+    }
+    memcpy(frame.data, kissFrame.data, kissFrame.len);
+    frame.len = kissFrame.len;
+    return true;
+}
+
+bool Kiss::decodeFrame(uint8_t byte, KissFrame& frame) {
     switch (_state) {
         case State::IDLE:
             if (byte == KISS_FEND) {
@@ -59,16 +77,12 @@ bool Kiss::decode(uint8_t byte, IpFrame& frame) {
                     _state    = State::IDLE;
                     break;
                 }
-                if (_buf[0] != KISS_DATA_FRAME) {
-                    // Non-data port: discard silently and require a fresh FEND.
-                    _len      = 0;
-                    _overflow = false;
-                    _state    = State::IDLE;
-                    break;
-                }
-                // Valid data frame: emit payload (strip port byte).
+                // Valid KISS frame: emit command and payload (strip command byte).
                 uint16_t payloadLen = _len - 1;
-                memcpy(frame.data, _buf + 1, payloadLen);
+                frame.command = _buf[0];
+                if (payloadLen > 0) {
+                    memcpy(frame.data, _buf + 1, payloadLen);
+                }
                 frame.len = payloadLen;
                 _len      = 0;
                 _overflow = false;

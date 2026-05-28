@@ -13,6 +13,13 @@ static constexpr uint8_t KISS_TFESC = 0xDD;
 
 // KISS port/command byte for data frames on port 0
 static constexpr uint8_t KISS_DATA_FRAME = 0x00;
+static constexpr uint8_t KISS_CONTROL_FRAME = 0x0F;
+
+struct KissFrame {
+    uint8_t command = 0;
+    uint8_t data[IP_MTU];
+    uint16_t len = 0;
+};
 
 class Kiss {
 public:
@@ -24,9 +31,13 @@ public:
     // Feed one byte at a time into the decoder.
     // Returns true when a complete frame has been decoded into frame.
     bool decode(uint8_t byte, IpFrame& frame);
+    bool decodeFrame(uint8_t byte, KissFrame& frame);
 
     // Reset decoder state (e.g. on sync loss)
     void reset();
+
+    static size_t encodeFrame(uint8_t command, const uint8_t* payload, uint16_t payloadLen,
+                              uint8_t* outBuf, size_t outBufLen);
 
 private:
     enum class State : uint8_t { IDLE, IN_FRAME, ESCAPE };

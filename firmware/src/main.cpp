@@ -9,6 +9,10 @@
 #include "framing/Framing.h"
 #include "display/Display.h"
 #include "stats/Stats.h"
+#include "config/ModemConfig.h"
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
 
 #if SERIAL_CONSOLE_LOGS
 #define BOOT_LOG(...) Serial.printf(__VA_ARGS__)
@@ -32,10 +36,19 @@
 // ── Globals ───────────────────────────────────────────────────────────────────
 static Radio   radio;
 static Display display;
+static ModemConfig modemConfig;
 
 static QueueHandle_t txQueue;   // IpFrame: SerialRX  → RadioTX
 static QueueHandle_t rxQueue;   // IpFrame: RadioRX   → SerialTX
 static QueueHandle_t ackQueue;  // AckFrame: RadioRX  → RadioTX
+
+static void refreshModemStats() {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    sm.get().freqMHz     = modemConfig.freqMHz;
+    sm.get().bitrateKbps = static_cast<uint32_t>(modemConfig.bitrateKbps);
+    sm.unlock();
+}
 
 struct CompletedFrameCache {
     uint16_t seq         = FRAMING_SEQ_UNSET;
@@ -152,6 +165,183 @@ static void noteMalformedData() {
     sm.lock();
     sm.get().rxMalformedDataCount++;
     sm.unlock();
+}
+
+static void sendControlResponse(const char* text) {
+    static uint8_t encBuf[512];
+    const size_t len = strlen(text);
+    const size_t encLen = Kiss::encodeFrame(KISS_CONTROL_FRAME,
+                                            reinterpret_cast<const uint8_t*>(text),
+                                            static_cast<uint16_t>(len),
+                                            encBuf,
+                                            sizeof(encBuf));
+    if (encLen == 0) {
+        return;
+    }
+    size_t offset = 0;
+    while (offset < encLen) {
+        size_t written = Serial.write(encBuf + offset, encLen - offset);
+        if (written == 0) {
+            vTaskDelay(pdMS_TO_TICKS(1));
+            continue;
+        }
+        offset += written;
+    }
+}
+
+static bool parseFloatValue(const char* value, float& out) {
+    char* end = nullptr;
+    float parsed = strtof(value, &end);
+    if (!end || *end != '\0') {
+        return false;
+    }
+    out = parsed;
+    return true;
+}
+
+static bool parseIntValue(const char* value, long& out) {
+    char* end = nullptr;
+    long parsed = strtol(value, &end, 10);
+    if (!end || *end != '\0') {
+        return false;
+    }
+    out = parsed;
+    return true;
+}
+
+static void handleControlCommand(const uint8_t* data, uint16_t len) {
+    char cmd[256];
+    if (len >= sizeof(cmd)) {
+        sendControlResponse("ERR command too long");
+        return;
+    }
+    memcpy(cmd, data, len);
+    cmd[len] = '\0';
+
+    char* save = nullptr;
+    char* verb = strtok_r(cmd, " \t\r\n", &save);
+    if (!verb) {
+        sendControlResponse("ERR empty command");
+        return;
+    }
+
+    if (strcasecmp(verb, "GET") == 0) {
+        char body[192];
+        char response[224];
+        modemFormatConfig(modemConfig, body, sizeof(body));
+        snprintf(response, sizeof(response), "OK %s", body);
+        sendControlResponse(response);
+        return;
+    }
+
+    if (strcasecmp(verb, "DEFAULTS") == 0) {
+        ModemConfig next = modemDefaultConfig();
+        char error[80];
+        int16_t state = radio.applyConfig(next);
+        if (state != RADIOLIB_ERR_NONE) {
+            snprintf(error, sizeof(error), "ERR radio=%d", state);
+            sendControlResponse(error);
+            return;
+        }
+        modemConfig = next;
+        modemSaveConfig(modemConfig);
+        refreshModemStats();
+        sendControlResponse("OK defaults applied");
+        return;
+    }
+
+    if (strcasecmp(verb, "SET") != 0) {
+        sendControlResponse("ERR expected GET, SET, or DEFAULTS");
+        return;
+    }
+
+    ModemConfig next = modemConfig;
+    for (char* token = strtok_r(nullptr, " \t\r\n", &save);
+         token != nullptr;
+         token = strtok_r(nullptr, " \t\r\n", &save)) {
+        char* eq = strchr(token, '=');
+        if (!eq) {
+            sendControlResponse("ERR expected key=value");
+            return;
+        }
+        *eq = '\0';
+        const char* key = token;
+        const char* value = eq + 1;
+        long ivalue = 0;
+
+        if (strcasecmp(key, "freq") == 0) {
+            if (!parseFloatValue(value, next.freqMHz)) {
+                sendControlResponse("ERR invalid freq");
+                return;
+            }
+        } else if (strcasecmp(key, "bitrate") == 0) {
+            if (!parseFloatValue(value, next.bitrateKbps)) {
+                sendControlResponse("ERR invalid bitrate");
+                return;
+            }
+        } else if (strcasecmp(key, "cr") == 0) {
+            if (!parseIntValue(value, ivalue)) {
+                sendControlResponse("ERR invalid cr");
+                return;
+            }
+            next.codingRate = static_cast<uint8_t>(ivalue);
+        } else if (strcasecmp(key, "power") == 0) {
+            if (!parseIntValue(value, ivalue)) {
+                sendControlResponse("ERR invalid power");
+                return;
+            }
+            next.txPowerDbm = static_cast<int8_t>(ivalue);
+        } else if (strcasecmp(key, "preamble") == 0) {
+            if (!parseIntValue(value, ivalue)) {
+                sendControlResponse("ERR invalid preamble");
+                return;
+            }
+            next.preambleBits = static_cast<uint8_t>(ivalue);
+        } else if (strcasecmp(key, "bt") == 0) {
+            if (!parseIntValue(value, ivalue)) {
+                sendControlResponse("ERR invalid bt");
+                return;
+            }
+            next.shaping = (ivalue == 0) ? RADIOLIB_SHAPING_0_5 : RADIOLIB_SHAPING_1_0;
+        } else if (strcasecmp(key, "sync") == 0) {
+            if (!modemParseSyncWord(value, next.syncWord)) {
+                sendControlResponse("ERR invalid sync");
+                return;
+            }
+        } else if (strcasecmp(key, "lbt") == 0) {
+            if (!parseIntValue(value, ivalue)) {
+                sendControlResponse("ERR invalid lbt");
+                return;
+            }
+            next.lbtRssiThresholdDbm = static_cast<int16_t>(ivalue);
+        } else {
+            sendControlResponse("ERR unknown key");
+            return;
+        }
+    }
+
+    char error[96];
+    if (!modemValidateConfig(next, error, sizeof(error))) {
+        char response[128];
+        snprintf(response, sizeof(response), "ERR %s", error);
+        sendControlResponse(response);
+        return;
+    }
+
+    int16_t state = radio.applyConfig(next);
+    if (state != RADIOLIB_ERR_NONE) {
+        char response[48];
+        snprintf(response, sizeof(response), "ERR radio=%d", state);
+        sendControlResponse(response);
+        return;
+    }
+    modemConfig = next;
+    if (!modemSaveConfig(modemConfig)) {
+        sendControlResponse("ERR save failed");
+        return;
+    }
+    refreshModemStats();
+    sendControlResponse("OK saved");
 }
 
 static void noteAckQueueDrop() {
@@ -601,6 +791,7 @@ static void radioTxTask(void*) {
 // Reads KISS bytes from USB CDC, decodes frames, pushes to txQueue.
 static void serialRxTask(void*) {
     Kiss     decoder;
+    KissFrame kissFrame;
     IpFrame  frame;
     uint32_t last_rx_ms = 0;
 
@@ -611,7 +802,16 @@ static void serialRxTask(void*) {
             for (int i = 0; i < avail; i++) {
                 int c = Serial.read();
                 if (c < 0) break;
-                if (decoder.decode(static_cast<uint8_t>(c), frame)) {
+                if (decoder.decodeFrame(static_cast<uint8_t>(c), kissFrame)) {
+                    if (kissFrame.command == KISS_CONTROL_FRAME) {
+                        handleControlCommand(kissFrame.data, kissFrame.len);
+                        continue;
+                    }
+                    if (kissFrame.command != KISS_DATA_FRAME) {
+                        continue;
+                    }
+                    memcpy(frame.data, kissFrame.data, kissFrame.len);
+                    frame.len = kissFrame.len;
 #if DEBUG_KISS_SERIAL_RX
                     Serial.printf("[KISS RX] len=%u hex=", frame.len);
                     for (int _i = 0; _i < 8 && _i < frame.len; _i++) {
@@ -729,11 +929,8 @@ void setup() {
     // Populate initial stats with config values
     {
         BOOT_LOG_LN("[main] Initializing statistics tracker...");
-        auto& sm = StatsManager::instance();
-        sm.lock();
-        sm.get().freqMHz     = RADIO_FREQ_MHZ;
-        sm.get().bitrateKbps = (uint32_t)RADIO_BITRATE_KBPS;
-        sm.unlock();
+        modemLoadConfig(modemConfig);
+        refreshModemStats();
         BOOT_LOG_LN("[main] Statistics tracker ready.");
     }
 
@@ -747,7 +944,7 @@ void setup() {
 #endif
 
     BOOT_LOG_LN("[main] Initializing SX1280 radio transceiver...");
-    int16_t radioErr = radio.begin();
+    int16_t radioErr = radio.begin(modemConfig);
     if (radioErr != RADIOLIB_ERR_NONE) {
         BOOT_LOG("[main] CRITICAL: Radio initialization failed! Error code: %d\n", radioErr);
         display.showError("Radio Init Fail", radioErr);
