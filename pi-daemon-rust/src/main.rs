@@ -1,12 +1,13 @@
 mod kiss;
 
 use clap::Parser;
+use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tun_rs::DeviceBuilder;
 
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
@@ -40,6 +41,9 @@ struct Args {
         help = "Suppress per-packet and lifecycle logs for benchmark runs"
     )]
     quiet: bool,
+
+    #[arg(long, help = "Write timestamped bridge events to this TSV file")]
+    trace_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -118,6 +122,50 @@ fn log_packet(direction: Direction, pkt: &[u8], debug_ip: bool) {
     }
 }
 
+struct TraceLogger {
+    start: Instant,
+    file: Option<Mutex<File>>,
+}
+
+impl TraceLogger {
+    fn new(path: Option<&str>) -> std::io::Result<Self> {
+        let file = match path {
+            Some(path) => Some(Mutex::new(
+                OpenOptions::new().create(true).append(true).open(path)?,
+            )),
+            None => None,
+        };
+        let logger = Self {
+            start: Instant::now(),
+            file,
+        };
+        logger.write("trace_start", "-", 0, "bridge=rust");
+        Ok(logger)
+    }
+
+    fn write(&self, event: &str, direction: &str, length: usize, detail: impl AsRef<str>) {
+        let Some(file) = &self.file else {
+            return;
+        };
+        let detail = detail.as_ref().replace(['\t', '\n'], " ");
+        let elapsed_ns = self.start.elapsed().as_nanos();
+        if let Ok(mut file) = file.lock() {
+            let _ = writeln!(
+                file,
+                "{}\t{}\t{}\t{}\t{}",
+                elapsed_ns, event, direction, length, detail
+            );
+            let _ = file.flush();
+        }
+    }
+}
+
+impl Drop for TraceLogger {
+    fn drop(&mut self) {
+        self.write("trace_stop", "-", 0, "");
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
@@ -151,6 +199,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Share the TUN device via Arc so both threads can access it
     let tun = Arc::new(dev);
+    let trace = Arc::new(TraceLogger::new(args.trace_file.as_deref())?);
 
     log_info(args.quiet, "[kiss_tun] Running - Ctrl-C to stop");
 
@@ -193,6 +242,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let quiet_t2 = args.quiet;
                 let debug_ip_t1 = args.debug_ip;
                 let debug_ip_t2 = args.debug_ip;
+                let trace_t1 = Arc::clone(&trace);
+                let trace_t2 = Arc::clone(&trace);
 
                 // Thread 1: TUN -> Radio (reads from TUN, writes to Serial)
                 let t1 = thread::spawn(move || {
@@ -205,10 +256,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 if n == 0 {
                                     break;
                                 }
+                                trace_t1.write(
+                                    "tun_read",
+                                    Direction::TunToRadio.label(),
+                                    n,
+                                    describe_ipv4_packet(&packet_buf[..n]),
+                                );
                                 if n > mtu as usize {
                                     eprintln!(
                                         "[kiss_tun] WARN dropped oversized packet ({} > {} bytes)",
                                         n, mtu
+                                    );
+                                    trace_t1.write(
+                                        "oversize_drop",
+                                        Direction::TunToRadio.label(),
+                                        n,
+                                        format!("mtu={}", mtu),
                                     );
                                     continue;
                                 }
@@ -223,15 +286,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 kiss::kiss_encode(&packet_buf[..n], &mut encoded_buf);
                                 if let Err(e) = ser_writer.write_all(&encoded_buf) {
                                     eprintln!("[kiss_tun] tun->radio serial write error: {}", e);
+                                    trace_t1.write(
+                                        "tun_to_radio_error",
+                                        Direction::TunToRadio.label(),
+                                        0,
+                                        e.to_string(),
+                                    );
                                     stop_t1.store(true, Ordering::Relaxed);
                                     break;
                                 }
+                                trace_t1.write(
+                                    "serial_write_done",
+                                    Direction::TunToRadio.label(),
+                                    n,
+                                    format!(
+                                        "encoded_len={} written={}",
+                                        encoded_buf.len(),
+                                        encoded_buf.len()
+                                    ),
+                                );
                                 // Pacing: prevents flooding USB CDC
                                 thread::sleep(Duration::from_millis(5));
                             }
                             Err(e) => {
                                 if !stop_t1.load(Ordering::Relaxed) {
                                     eprintln!("[kiss_tun] tun->radio TUN read error: {}", e);
+                                    trace_t1.write(
+                                        "tun_to_radio_error",
+                                        Direction::TunToRadio.label(),
+                                        0,
+                                        e.to_string(),
+                                    );
                                     stop_t1.store(true, Ordering::Relaxed);
                                 }
                                 break;
@@ -254,9 +339,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 break;
                             }
                             Ok(n) => {
+                                trace_t2.write("serial_read", Direction::RadioToTun.label(), n, "");
                                 for &byte in &read_buf[..n] {
                                     if decoder.feed(byte, &mut decoded_buf) {
                                         if !decoded_buf.is_empty() {
+                                            trace_t2.write(
+                                                "kiss_frame",
+                                                Direction::RadioToTun.label(),
+                                                decoded_buf.len(),
+                                                describe_ipv4_packet(&decoded_buf),
+                                            );
                                             log_info(
                                                 quiet_t2,
                                                 format!(
@@ -275,6 +367,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                                     "[kiss_tun] radio->tun: dropped invalid IP packet or write error: {}",
                                                     e
                                                 );
+                                                trace_t2.write(
+                                                    "tun_write_invalid",
+                                                    Direction::RadioToTun.label(),
+                                                    decoded_buf.len(),
+                                                    e.to_string(),
+                                                );
+                                            } else {
+                                                trace_t2.write(
+                                                    "tun_write_done",
+                                                    Direction::RadioToTun.label(),
+                                                    decoded_buf.len(),
+                                                    describe_ipv4_packet(&decoded_buf),
+                                                );
                                             }
                                         }
                                     }
@@ -286,6 +391,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             Err(e) => {
                                 if !stop_t2.load(Ordering::Relaxed) {
                                     eprintln!("[kiss_tun] radio->tun serial read error: {}", e);
+                                    trace_t2.write(
+                                        "radio_to_tun_error",
+                                        Direction::RadioToTun.label(),
+                                        0,
+                                        e.to_string(),
+                                    );
                                     stop_t2.store(true, Ordering::Relaxed);
                                 }
                                 break;

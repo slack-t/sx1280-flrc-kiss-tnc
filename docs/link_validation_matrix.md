@@ -42,6 +42,23 @@ sudo iptables -t mangle -A OUTPUT -o tun0 -p tcp --tcp-flags SYN,RST SYN -j TCPM
 For diagnostic runs only, add `--debug-ip` and remove `--quiet`. Both the
 Python and Rust bridges support these flags.
 
+For timing correlation without terminal logging, keep `--quiet` and add
+`--trace-file`:
+
+```sh
+python pi-daemon/kiss_tun.py --port /dev/ttyACM0 --addr 10.0.0.1/30 --mtu 123 --quiet --trace-file reports/node_a_trace.tsv
+```
+
+Rust equivalent:
+
+```sh
+pi-daemon-rust/target/release/kiss-tun-rs --port /dev/ttyACM0 --addr 10.0.0.1/30 --mtu 123 --quiet --trace-file reports/node_a_trace.tsv
+```
+
+Trace files are tab-separated rows:
+
+`elapsed_ns  event  direction  length  detail`
+
 ## Automated Runner
 
 After both bridges are running, the matrix can be executed from node A with:

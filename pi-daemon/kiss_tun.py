@@ -113,6 +113,30 @@ def log_error(message: str) -> None:
     print(message, flush=True)
 
 
+class TraceLogger:
+    def __init__(self, path: str | None):
+        self._start_ns = time.monotonic_ns()
+        self._fh = open(path, "a", buffering=1) if path else None
+        self._lock = threading.Lock()
+        if self._fh:
+            self.write("trace_start", "-", 0, "bridge=python")
+
+    def write(self, event: str, direction: str, length: int, detail: str = "") -> None:
+        if not self._fh:
+            return
+        detail = detail.replace("\t", " ").replace("\n", " ")
+        elapsed_ns = time.monotonic_ns() - self._start_ns
+        line = f"{elapsed_ns}\t{event}\t{direction}\t{length}\t{detail}\n"
+        with self._lock:
+            self._fh.write(line)
+
+    def close(self) -> None:
+        if self._fh:
+            self.write("trace_stop", "-", 0)
+            self._fh.close()
+            self._fh = None
+
+
 class _KissState:
     IDLE     = 0
     IN_FRAME = 1
@@ -186,7 +210,8 @@ class KissDecoder:
                     self._state = _KissState.IN_FRAME
 
 
-def tun_to_radio(tun, ser, mtu: int, stop_event: threading.Event, debug_ip: bool, quiet: bool):
+def tun_to_radio(tun, ser, mtu: int, stop_event: threading.Event, debug_ip: bool,
+                 quiet: bool, trace: TraceLogger):
     """Read IP packets from tun0 and send as KISS frames over serial."""
     while not stop_event.is_set():
         try:
@@ -197,21 +222,28 @@ def tun_to_radio(tun, ser, mtu: int, stop_event: threading.Event, debug_ip: bool
             pkt = os.read(tun.fileno(), 65535)
             if not pkt:
                 continue
+            trace.write("tun_read", Direction.TUN_TO_RADIO.value, len(pkt), describe_ipv4_packet(pkt))
             if len(pkt) > mtu:
                 log_error(f"[kiss_tun] WARN dropped oversized packet ({len(pkt)} > {mtu} bytes)")
+                trace.write("oversize_drop", Direction.TUN_TO_RADIO.value, len(pkt), f"mtu={mtu}")
                 continue
             log_info(f"[kiss_tun] tun0 -> radio: sending {len(pkt)} bytes", quiet)
             log_packet(Direction.TUN_TO_RADIO, pkt, debug_ip)
-            ser.write(kiss_encode(pkt))
+            encoded = kiss_encode(pkt)
+            written = ser.write(encoded)
+            trace.write("serial_write_done", Direction.TUN_TO_RADIO.value, len(pkt),
+                        f"encoded_len={len(encoded)} written={written}")
             # Pacing: A small 5ms delay prevents the host from flooding the USB CDC
             # buffers and the TNC board's internal queue during high-throughput benchmarks.
             time.sleep(0.005)
         except (serial.SerialException, OSError) as e:
             log_error(f"[kiss_tun] tun->radio error: {e}")
+            trace.write("tun_to_radio_error", Direction.TUN_TO_RADIO.value, 0, str(e))
             stop_event.set()
 
 
-def radio_to_tun(tun, ser, mtu: int, stop_event: threading.Event, debug_ip: bool, quiet: bool):
+def radio_to_tun(tun, ser, mtu: int, stop_event: threading.Event, debug_ip: bool,
+                 quiet: bool, trace: TraceLogger):
     """Read KISS frames from serial and inject IP packets into tun0."""
     decoder = KissDecoder(mtu)
     while not stop_event.is_set():
@@ -219,21 +251,29 @@ def radio_to_tun(tun, ser, mtu: int, stop_event: threading.Event, debug_ip: bool
             waiting = ser.in_waiting
             if waiting:
                 data = ser.read(waiting)
+                trace.write("serial_read", Direction.RADIO_TO_TUN.value, len(data))
                 for port, payload in decoder.feed(data):
                     if port == KISS_DATA_PORT and payload:
                         try:
+                            trace.write("kiss_frame", Direction.RADIO_TO_TUN.value, len(payload),
+                                        describe_ipv4_packet(payload))
                             log_info(f"[kiss_tun] radio -> tun0: injecting {len(payload)} bytes", quiet)
                             log_packet(Direction.RADIO_TO_TUN, payload, debug_ip)
                             os.write(tun.fileno(), payload)
+                            trace.write("tun_write_done", Direction.RADIO_TO_TUN.value, len(payload),
+                                        describe_ipv4_packet(payload))
                         except OSError as e:
                             if e.errno == errno.EINVAL:
                                 log_error(f"[kiss_tun] radio->tun: dropped invalid IP packet (len={len(payload)})")
+                                trace.write("tun_write_invalid", Direction.RADIO_TO_TUN.value,
+                                            len(payload), str(e))
                             else:
                                 raise
             else:
                 time.sleep(0.001)
         except (serial.SerialException, OSError) as e:
             log_error(f"[kiss_tun] radio->tun error: {e}")
+            trace.write("radio_to_tun_error", Direction.RADIO_TO_TUN.value, 0, str(e))
             stop_event.set()
 
 
@@ -247,11 +287,12 @@ def configure_tun(tun, addr_with_prefix: str, mtu: int):
     return interface
 
 
-def run_bridge(tun, ser, mtu: int, debug_ip: bool, quiet: bool) -> threading.Event:
+def run_bridge(tun, ser, mtu: int, debug_ip: bool, quiet: bool,
+               trace: TraceLogger) -> threading.Event:
     """Start bridge threads; returns the stop_event they share."""
     stop = threading.Event()
-    t1 = threading.Thread(target=tun_to_radio,  args=(tun, ser, mtu, stop, debug_ip, quiet), daemon=True)
-    t2 = threading.Thread(target=radio_to_tun,  args=(tun, ser, mtu, stop, debug_ip, quiet), daemon=True)
+    t1 = threading.Thread(target=tun_to_radio,  args=(tun, ser, mtu, stop, debug_ip, quiet, trace), daemon=True)
+    t2 = threading.Thread(target=radio_to_tun,  args=(tun, ser, mtu, stop, debug_ip, quiet, trace), daemon=True)
     t1.start()
     t2.start()
     t1.join()
@@ -275,6 +316,8 @@ def main():
                         help="Log IPv4 header details for packets sent to and from the TUN")
     parser.add_argument("--quiet", action="store_true",
                         help="Suppress per-packet and lifecycle logs for benchmark runs")
+    parser.add_argument("--trace-file", default=None,
+                        help="Write timestamped bridge events to this TSV file")
     args = parser.parse_args()
 
     try:
@@ -287,6 +330,7 @@ def main():
 
     log_info(f"[kiss_tun] {tun.name} up - {interface.ip}/{interface.network.prefixlen}  MTU {args.mtu}", args.quiet)
     log_info("[kiss_tun] Running - Ctrl-C to stop", args.quiet)
+    trace = TraceLogger(args.trace_file)
     try:
         while True:
             try:
@@ -296,7 +340,7 @@ def main():
 
                 # run_bridge blocks until a thread sets stop (serial error) or
                 # KeyboardInterrupt propagates up through join().
-                run_bridge(tun, ser, args.mtu, args.debug_ip, args.quiet)
+                run_bridge(tun, ser, args.mtu, args.debug_ip, args.quiet, trace)
 
                 ser.close()
                 log_error(f"[kiss_tun] Connection lost - retrying in {RECONNECT_DELAY_S} s ...")
@@ -311,6 +355,8 @@ def main():
         log_info("\n[kiss_tun] Stopping ...", args.quiet)
         tun.down()
         log_info("[kiss_tun] Done.", args.quiet)
+    finally:
+        trace.close()
 
 
 if __name__ == "__main__":

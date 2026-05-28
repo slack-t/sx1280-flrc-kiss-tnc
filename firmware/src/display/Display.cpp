@@ -111,6 +111,45 @@ void Display::update(const Stats& s) {
     _sprite.setTextColor(TFT_WHITE, TFT_BLACK);
     char buf[32];
 
+    const bool diagPage = ((now / 3000) % 2) == 1;
+
+    if (diagPage) {
+        snprintf(buf, sizeof(buf), "AT:%lu", s.arqAckTimeoutCount);
+        _sprite.setCursor(2, 15);
+        _sprite.print(buf);
+
+        snprintf(buf, sizeof(buf), "RE:%lu", s.radioRxErrors);
+        _sprite.setCursor(68, 15);
+        _sprite.print(buf);
+
+        snprintf(buf, sizeof(buf), "RT:%lu", s.arqRetryCount);
+        _sprite.setCursor(2, 27);
+        _sprite.print(buf);
+
+        snprintf(buf, sizeof(buf), "TE:%lu", s.radioTxErrors);
+        _sprite.setCursor(68, 27);
+        _sprite.print(buf);
+
+        snprintf(buf, sizeof(buf), "TQ:%lu", s.txQueueWaitCount);
+        _sprite.setCursor(2, 39);
+        _sprite.print(buf);
+
+        snprintf(buf, sizeof(buf), "RQ:%lu", s.rxQueueWaitCount);
+        _sprite.setCursor(68, 39);
+        _sprite.print(buf);
+
+        snprintf(buf, sizeof(buf), "ZW:%lu", s.serialTxZeroWrites);
+        _sprite.setCursor(2, 51);
+        _sprite.print(buf);
+
+        snprintf(buf, sizeof(buf), "ST:%lu", s.serialTxTimeouts);
+        _sprite.setCursor(68, 51);
+        _sprite.print(buf);
+
+        _sprite.pushSprite(&_lcd, 0, 0);
+        return;
+    }
+
     // --- Row 1 (Y = 15) ---
     snprintf(buf, sizeof(buf), "F:%.1f", s.freqMHz);
     _sprite.setCursor(2, 15);

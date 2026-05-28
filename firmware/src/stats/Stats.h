@@ -29,6 +29,14 @@ struct Stats {
     uint32_t arqDuplicateSuppressed = 0;
     uint32_t arqQueueDrops       = 0;
     uint32_t arqIdentityResets   = 0;
+    uint32_t arqAckQueueDrops    = 0;
+    uint32_t radioTxErrors       = 0;
+    uint32_t radioRxErrors       = 0;
+    uint32_t txQueueWaitCount    = 0;
+    uint32_t rxQueueWaitCount    = 0;
+    uint32_t serialTxZeroWrites  = 0;
+    uint32_t serialTxTimeouts    = 0;
+    uint32_t serialTxEncodeFails = 0;
     RadioState radioState = RadioState::IDLE;
     float    freqMHz     = 0.0f;
     uint32_t bitrateKbps = 0;

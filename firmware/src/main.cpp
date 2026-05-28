@@ -86,6 +86,30 @@ static void noteIdentityReset() {
     sm.unlock();
 }
 
+static void noteRadioTxError() {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    sm.get().radioTxErrors++;
+    sm.unlock();
+    noteRadioError();
+}
+
+static void noteRadioRxError() {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    sm.get().radioRxErrors++;
+    sm.unlock();
+    noteRadioError();
+}
+
+static void noteAckQueueDrop() {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    sm.get().arqAckQueueDrops++;
+    sm.unlock();
+    noteQueueDrop();
+}
+
 static bool ipv4FrameLooksComplete(const IpFrame& frame) {
     if (frame.len < 20) {
         return false;
@@ -133,6 +157,15 @@ static void finalizeReassembly(Reassembler& ra, CompletedFrameCache& completed) 
     if (xQueueSend(rxQueue, &frame, pdMS_TO_TICKS(RX_QUEUE_TIMEOUT_MS)) != pdPASS) {
         noteQueueDrop();
         noteRadioError();
+    } else {
+        // Any successful bounded send could still have waited; count a possible
+        // backpressure point if the queue is full immediately after enqueue.
+        if (uxQueueSpacesAvailable(rxQueue) == 0) {
+            auto& sm = StatsManager::instance();
+            sm.lock();
+            sm.get().rxQueueWaitCount++;
+            sm.unlock();
+        }
     }
     ARQ_LOG("[ARQ RX:DONE seq=%04x tot=%u mask=%02x len=%u]\n",
             ra.seq, ra.total_frags, ra.received_mask, frame.len);
@@ -169,7 +202,7 @@ static void sendAckForReassembly(Reassembler& ra) {
         sm.lock();
         sm.get().arqAckTxErrors++;
         sm.unlock();
-        noteRadioError();
+        noteRadioTxError();
         return;
     }
 
@@ -240,14 +273,14 @@ static void radioRxTask(void*) {
             continue;
         }
         if (err != RADIOLIB_ERR_NONE || pkt.len < 1) {
-            noteRadioError();
+            noteRadioRxError();
             continue;
         }
 
         if (framingPacketType(pkt) == LinkPacketType::ACK) {
             AckFrame ack;
             if (!framingParseAck(pkt, ack)) {
-                noteRadioError();
+                noteRadioRxError();
                 continue;
             }
             auto& sm = StatsManager::instance();
@@ -255,7 +288,7 @@ static void radioRxTask(void*) {
             sm.get().arqAckRxCount++;
             sm.unlock();
             if (xQueueSend(ackQueue, &ack, 0) != pdPASS) {
-                noteQueueDrop();
+                noteAckQueueDrop();
                 noteRadioError();
             }
             continue;
@@ -270,7 +303,7 @@ static void radioRxTask(void*) {
 
         if (total_frags == 0 || total_frags > FRAMING_MAX_FRAGS ||
             idx >= total_frags || frag_data_len > FRAMING_FRAG_DATA) {
-            noteRadioError();
+            noteRadioRxError();
             continue;
         }
 
@@ -296,7 +329,7 @@ static void radioRxTask(void*) {
                 sm.lock();
                 sm.get().arqAckTxErrors++;
                 sm.unlock();
-                noteRadioError();
+                noteRadioTxError();
             }
             continue;
         }
@@ -429,6 +462,7 @@ static void radioTxTask(void*) {
                 sm.get().radioState = RadioState::IDLE;
                 if (err != RADIOLIB_ERR_NONE) {
                     sm.get().errorCount++;
+                    sm.get().radioTxErrors++;
                 }
                 sm.unlock();
 
@@ -521,6 +555,12 @@ static void serialRxTask(void*) {
                     Serial.printf("\n");
 #endif
                     // Block indefinitely on queue to apply backpressure to USB CDC
+                    if (uxQueueSpacesAvailable(txQueue) == 0) {
+                        auto& sm = StatsManager::instance();
+                        sm.lock();
+                        sm.get().txQueueWaitCount++;
+                        sm.unlock();
+                    }
                     xQueueSend(txQueue, &frame, portMAX_DELAY);
                 }
             }
@@ -551,6 +591,10 @@ static void serialTxTask(void*) {
         xQueueReceive(rxQueue, &frame, portMAX_DELAY);
         size_t encLen = Kiss::encode(frame, encBuf, sizeof(encBuf));
         if (encLen == 0) {
+            auto& sm = StatsManager::instance();
+            sm.lock();
+            sm.get().serialTxEncodeFails++;
+            sm.unlock();
             noteRadioError();
             continue;
         }
@@ -564,10 +608,17 @@ static void serialTxTask(void*) {
                 offset += written;
                 in_retry = false; // Reset retry window on successful write progress
             } else {
+                auto& sm = StatsManager::instance();
+                sm.lock();
+                sm.get().serialTxZeroWrites++;
+                sm.unlock();
                 if (!in_retry) {
                     retry_start_ms = millis();
                     in_retry = true;
                 } else if (millis() - retry_start_ms > 50) { // 50 ms timeout
+                    sm.lock();
+                    sm.get().serialTxTimeouts++;
+                    sm.unlock();
                     noteRadioError();
                     break;
                 }
