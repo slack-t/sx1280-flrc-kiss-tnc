@@ -19,6 +19,12 @@ increase the wait:
 python3 pi-daemon/modem_tui.py --port /dev/ttyACM0 --boot-wait 5 --timeout 3
 ```
 
+To test the control channel without starting curses:
+
+```sh
+python3 pi-daemon/modem_tui.py --port /dev/ttyACM0 --probe --boot-wait 5 --timeout 3
+```
+
 Settings are applied immediately and saved in ESP32 NVS.
 
 Configurable fields:

@@ -82,17 +82,17 @@ class KissDecoder:
 class ModemClient:
     def __init__(self, port: str, baud: int, timeout: float,
                  boot_wait: float, retries: int):
-        self.ser = serial.Serial(
-            port=port,
-            baudrate=baud,
-            timeout=0,
-            rtscts=False,
-            dsrdtr=False,
-        )
-        # Some ESP32-S3 USB CDC setups reset on host open/control-line changes.
-        # Keep control lines inactive and give firmware time to boot if reset.
+        # Configure control lines before opening. Opening the ESP32-S3 USB CDC
+        # device can reset the board if the OS/driver asserts DTR/RTS first.
+        self.ser = serial.Serial()
+        self.ser.port = port
+        self.ser.baudrate = baud
+        self.ser.timeout = 0
+        self.ser.rtscts = False
+        self.ser.dsrdtr = False
         self.ser.dtr = False
         self.ser.rts = False
+        self.ser.open()
         if boot_wait > 0:
             time.sleep(boot_wait)
         self.ser.reset_input_buffer()
@@ -209,11 +209,16 @@ def main():
                         help="Seconds to wait after opening serial before first command")
     parser.add_argument("--retries", type=int, default=5,
                         help="Control command retries before failing")
+    parser.add_argument("--probe", action="store_true",
+                        help="Send GET, print the response, and exit without curses")
     args = parser.parse_args()
 
     client = ModemClient(args.port, args.baud, args.timeout, args.boot_wait, args.retries)
     try:
-        curses.wrapper(run_tui, client)
+        if args.probe:
+            print(client.command("GET"))
+        else:
+            curses.wrapper(run_tui, client)
     finally:
         client.close()
 
