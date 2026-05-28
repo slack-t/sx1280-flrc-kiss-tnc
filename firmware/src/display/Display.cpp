@@ -246,7 +246,7 @@ void Display::update(const Stats& s) {
         _sprite.setCursor(68, 39);
         _sprite.print(buf);
 
-        snprintf(buf, sizeof(buf), "RE:%lu", s.radioRxErrors);
+        snprintf(buf, sizeof(buf), "NO:%lu", s.nativeOversizeDropCount);
         _sprite.setCursor(2, 51);
         _sprite.print(buf);
 
@@ -290,7 +290,7 @@ void Display::update(const Stats& s) {
         snprintf(buf, sizeof(buf), "NTX:%lu", s.nativeTxCount);
         _sprite.setCursor(2, 51);
         _sprite.print(buf);
-        snprintf(buf, sizeof(buf), "NRX:%lu", s.nativeRxCount);
+        snprintf(buf, sizeof(buf), "NOV:%lu", s.nativeOversizeDropCount);
         _sprite.setCursor(68, 51);
         _sprite.print(buf);
     } else {
