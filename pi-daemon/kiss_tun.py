@@ -104,6 +104,15 @@ def log_packet(direction: Direction, pkt: bytes, debug_ip: bool) -> None:
         print(f"[kiss_tun] {direction.value}: {describe_ipv4_packet(pkt)}", flush=True)
 
 
+def log_info(message: str, quiet: bool = False) -> None:
+    if not quiet:
+        print(message, flush=True)
+
+
+def log_error(message: str) -> None:
+    print(message, flush=True)
+
+
 class _KissState:
     IDLE     = 0
     IN_FRAME = 1
@@ -177,7 +186,7 @@ class KissDecoder:
                     self._state = _KissState.IN_FRAME
 
 
-def tun_to_radio(tun, ser, mtu: int, stop_event: threading.Event, debug_ip: bool):
+def tun_to_radio(tun, ser, mtu: int, stop_event: threading.Event, debug_ip: bool, quiet: bool):
     """Read IP packets from tun0 and send as KISS frames over serial."""
     while not stop_event.is_set():
         try:
@@ -189,21 +198,20 @@ def tun_to_radio(tun, ser, mtu: int, stop_event: threading.Event, debug_ip: bool
             if not pkt:
                 continue
             if len(pkt) > mtu:
-                print(f"[kiss_tun] WARN dropped oversized packet ({len(pkt)} > {mtu} bytes)",
-                      flush=True)
+                log_error(f"[kiss_tun] WARN dropped oversized packet ({len(pkt)} > {mtu} bytes)")
                 continue
-            print(f"[kiss_tun] tun0 → radio: sending {len(pkt)} bytes", flush=True)
+            log_info(f"[kiss_tun] tun0 -> radio: sending {len(pkt)} bytes", quiet)
             log_packet(Direction.TUN_TO_RADIO, pkt, debug_ip)
             ser.write(kiss_encode(pkt))
             # Pacing: A small 5ms delay prevents the host from flooding the USB CDC
             # buffers and the TNC board's internal queue during high-throughput benchmarks.
             time.sleep(0.005)
         except (serial.SerialException, OSError) as e:
-            print(f"[kiss_tun] tun→radio error: {e}", flush=True)
+            log_error(f"[kiss_tun] tun->radio error: {e}")
             stop_event.set()
 
 
-def radio_to_tun(tun, ser, mtu: int, stop_event: threading.Event, debug_ip: bool):
+def radio_to_tun(tun, ser, mtu: int, stop_event: threading.Event, debug_ip: bool, quiet: bool):
     """Read KISS frames from serial and inject IP packets into tun0."""
     decoder = KissDecoder(mtu)
     while not stop_event.is_set():
@@ -214,18 +222,18 @@ def radio_to_tun(tun, ser, mtu: int, stop_event: threading.Event, debug_ip: bool
                 for port, payload in decoder.feed(data):
                     if port == KISS_DATA_PORT and payload:
                         try:
-                            print(f"[kiss_tun] radio → tun0: injecting {len(payload)} bytes", flush=True)
+                            log_info(f"[kiss_tun] radio -> tun0: injecting {len(payload)} bytes", quiet)
                             log_packet(Direction.RADIO_TO_TUN, payload, debug_ip)
                             os.write(tun.fileno(), payload)
                         except OSError as e:
                             if e.errno == errno.EINVAL:
-                                print(f"[kiss_tun] radio→tun: dropped invalid IP packet (len={len(payload)})", flush=True)
+                                log_error(f"[kiss_tun] radio->tun: dropped invalid IP packet (len={len(payload)})")
                             else:
                                 raise
             else:
                 time.sleep(0.001)
         except (serial.SerialException, OSError) as e:
-            print(f"[kiss_tun] radio→tun error: {e}", flush=True)
+            log_error(f"[kiss_tun] radio->tun error: {e}")
             stop_event.set()
 
 
@@ -236,15 +244,14 @@ def configure_tun(tun, addr_with_prefix: str, mtu: int):
     tun.netmask = str(interface.netmask)
     tun.mtu     = mtu
     tun.up()
-    print(f"[kiss_tun] {tun.name} up — {interface.ip}/{interface.network.prefixlen}  MTU {mtu}",
-          flush=True)
+    return interface
 
 
-def run_bridge(tun, ser, mtu: int, debug_ip: bool) -> threading.Event:
+def run_bridge(tun, ser, mtu: int, debug_ip: bool, quiet: bool) -> threading.Event:
     """Start bridge threads; returns the stop_event they share."""
     stop = threading.Event()
-    t1 = threading.Thread(target=tun_to_radio,  args=(tun, ser, mtu, stop, debug_ip), daemon=True)
-    t2 = threading.Thread(target=radio_to_tun,  args=(tun, ser, mtu, stop, debug_ip), daemon=True)
+    t1 = threading.Thread(target=tun_to_radio,  args=(tun, ser, mtu, stop, debug_ip, quiet), daemon=True)
+    t2 = threading.Thread(target=radio_to_tun,  args=(tun, ser, mtu, stop, debug_ip, quiet), daemon=True)
     t1.start()
     t2.start()
     t1.join()
@@ -271,37 +278,39 @@ def main():
                         help="TUN interface name (default: tun0)")
     parser.add_argument("--debug-ip", action="store_true",
                         help="Log IPv4 header details for packets sent to and from the TUN")
+    parser.add_argument("--quiet", action="store_true",
+                        help="Suppress per-packet and lifecycle logs for benchmark runs")
     args = parser.parse_args()
 
     tun = pytun.TunTapDevice(name=args.name, flags=pytun.IFF_TUN | pytun.IFF_NO_PI)
-    configure_tun(tun, args.addr, args.mtu)
+    interface = configure_tun(tun, args.addr, args.mtu)
 
-    print("[kiss_tun] Running — Ctrl-C to stop", flush=True)
+    log_info(f"[kiss_tun] {tun.name} up - {interface.ip}/{interface.network.prefixlen}  MTU {args.mtu}", args.quiet)
+    log_info("[kiss_tun] Running - Ctrl-C to stop", args.quiet)
     try:
         while True:
             try:
-                print(f"[kiss_tun] Connecting to {args.port} ...", flush=True)
+                log_info(f"[kiss_tun] Connecting to {args.port} ...", args.quiet)
                 ser = serial.Serial(args.port, args.baud, timeout=0)
-                print(f"[kiss_tun] Connected.", flush=True)
+                log_info("[kiss_tun] Connected.", args.quiet)
 
                 # run_bridge blocks until a thread sets stop (serial error) or
                 # KeyboardInterrupt propagates up through join().
-                run_bridge(tun, ser, args.mtu, args.debug_ip)
+                run_bridge(tun, ser, args.mtu, args.debug_ip, args.quiet)
 
                 ser.close()
-                print(f"[kiss_tun] Connection lost — retrying in {RECONNECT_DELAY_S} s ...",
-                      flush=True)
+                log_error(f"[kiss_tun] Connection lost - retrying in {RECONNECT_DELAY_S} s ...")
                 time.sleep(RECONNECT_DELAY_S)
 
             except (serial.SerialException, OSError) as e:
-                print(f"[kiss_tun] Cannot open {args.port}: {e} — "
-                      f"retrying in {RECONNECT_DELAY_S} s ...", flush=True)
+                log_error(f"[kiss_tun] Cannot open {args.port}: {e} - "
+                          f"retrying in {RECONNECT_DELAY_S} s ...")
                 time.sleep(RECONNECT_DELAY_S)
 
     except KeyboardInterrupt:
-        print("\n[kiss_tun] Stopping ...", flush=True)
+        log_info("\n[kiss_tun] Stopping ...", args.quiet)
         tun.down()
-        print("[kiss_tun] Done.")
+        log_info("[kiss_tun] Done.", args.quiet)
 
 
 if __name__ == "__main__":

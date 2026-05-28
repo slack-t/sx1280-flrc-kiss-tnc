@@ -6,6 +6,9 @@ __pycache__/
 *.pyc
 pi-daemon/__pycache__/
 
+# Local validation output
+reports/
+
 # Submodule — tracked separately
 misc/tncattach/
 .gitnexus
