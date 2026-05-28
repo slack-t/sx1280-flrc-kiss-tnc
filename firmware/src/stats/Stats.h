@@ -37,6 +37,14 @@ struct Stats {
     uint32_t serialTxZeroWrites  = 0;
     uint32_t serialTxTimeouts    = 0;
     uint32_t serialTxEncodeFails = 0;
+    uint32_t rxSpuriousIrqCount  = 0;
+    uint32_t rxInvalidLengthCount = 0;
+    uint32_t rxReadDataErrorCount = 0;
+    uint32_t rxMalformedAckCount = 0;
+    uint32_t rxMalformedDataCount = 0;
+    int16_t  lastRadioErr        = 0;
+    uint16_t lastIrqStatus       = 0;
+    uint16_t lastPacketLength    = 0;
     RadioState radioState = RadioState::IDLE;
     float    freqMHz     = 0.0f;
     uint32_t bitrateKbps = 0;

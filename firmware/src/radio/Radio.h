@@ -4,6 +4,7 @@
 #include "../kiss/Kiss.h"
 
 #define ERR_SPURIOUS_IRQ -1000
+#define ERR_INVALID_PACKET_LEN -1001
 
 class Radio {
 public:
@@ -30,6 +31,9 @@ public:
 
     // Last received signal strength (dBm)
     int8_t lastRssi() const { return _lastRssi; }
+    int16_t lastRadioErr() const { return _lastRadioErr; }
+    uint16_t lastIrqStatus() const { return _lastIrqStatus; }
+    uint16_t lastPacketLength() const { return _lastPacketLength; }
 
     // FreeRTOS semaphore given from the DIO1 ISR — radio task waits on this
     SemaphoreHandle_t rxSemaphore = nullptr;
@@ -44,6 +48,9 @@ private:
     SemaphoreHandle_t _spiMutex = nullptr;
 
     int8_t _lastRssi = 0;
+    int16_t _lastRadioErr = RADIOLIB_ERR_NONE;
+    uint16_t _lastIrqStatus = 0;
+    uint16_t _lastPacketLength = 0;
 
     // SPI call without taking _spiMutex — use only when the mutex is already held.
     // forceReset=true (after TX or error): clears IRQ state fully.

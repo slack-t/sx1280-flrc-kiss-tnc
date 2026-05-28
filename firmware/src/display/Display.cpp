@@ -111,9 +111,9 @@ void Display::update(const Stats& s) {
     _sprite.setTextColor(TFT_WHITE, TFT_BLACK);
     char buf[32];
 
-    const bool diagPage = ((now / 3000) % 2) == 1;
+    const uint8_t page = static_cast<uint8_t>((now / 3000) % 3);
 
-    if (diagPage) {
+    if (page == 1) {
         snprintf(buf, sizeof(buf), "AT:%lu", s.arqAckTimeoutCount);
         _sprite.setCursor(2, 15);
         _sprite.print(buf);
@@ -143,6 +143,43 @@ void Display::update(const Stats& s) {
         _sprite.print(buf);
 
         snprintf(buf, sizeof(buf), "ST:%lu", s.serialTxTimeouts);
+        _sprite.setCursor(68, 51);
+        _sprite.print(buf);
+
+        _sprite.pushSprite(&_lcd, 0, 0);
+        return;
+    }
+
+    if (page == 2) {
+        snprintf(buf, sizeof(buf), "SP:%lu", s.rxSpuriousIrqCount);
+        _sprite.setCursor(2, 15);
+        _sprite.print(buf);
+
+        snprintf(buf, sizeof(buf), "IL:%lu", s.rxInvalidLengthCount);
+        _sprite.setCursor(68, 15);
+        _sprite.print(buf);
+
+        snprintf(buf, sizeof(buf), "RD:%lu", s.rxReadDataErrorCount);
+        _sprite.setCursor(2, 27);
+        _sprite.print(buf);
+
+        snprintf(buf, sizeof(buf), "MA:%lu", s.rxMalformedAckCount);
+        _sprite.setCursor(68, 27);
+        _sprite.print(buf);
+
+        snprintf(buf, sizeof(buf), "MD:%lu", s.rxMalformedDataCount);
+        _sprite.setCursor(2, 39);
+        _sprite.print(buf);
+
+        snprintf(buf, sizeof(buf), "LE:%d", s.lastRadioErr);
+        _sprite.setCursor(68, 39);
+        _sprite.print(buf);
+
+        snprintf(buf, sizeof(buf), "IR:%04x", s.lastIrqStatus);
+        _sprite.setCursor(2, 51);
+        _sprite.print(buf);
+
+        snprintf(buf, sizeof(buf), "LN:%u", s.lastPacketLength);
         _sprite.setCursor(68, 51);
         _sprite.print(buf);
 

@@ -94,24 +94,29 @@ int16_t Radio::readPacket(Packet& pkt) {
     // This prevents spurious interrupts (like a late/delayed TX_DONE edge)
     // from leaving the radio deaf or triggering false reads.
     uint16_t irq = _radio.getIrqStatus();
+    _lastIrqStatus = irq;
     if (!(irq & RADIOLIB_SX128X_IRQ_RX_DONE)) {
         // Force the radio back into receive mode so it doesn't stay deaf.
         // _startReceiveNoLock(true) internally clears the chip's interrupt registers.
         _startReceiveNoLock(true);
         xSemaphoreGive(_spiMutex);
+        _lastRadioErr = ERR_SPURIOUS_IRQ;
         return ERR_SPURIOUS_IRQ;
     }
 
     size_t len = _radio.getPacketLength();
+    _lastPacketLength = static_cast<uint16_t>(len);
     if (len == 0 || len > PACKET_MAX_LEN) {
         // Clear interrupts and force-reset RX mode to flush the FIFO.
         // _startReceiveNoLock(true) internally clears the chip's interrupt registers.
         _startReceiveNoLock(true);
         xSemaphoreGive(_spiMutex);
-        return RADIOLIB_ERR_PACKET_TOO_LONG;
+        _lastRadioErr = ERR_INVALID_PACKET_LEN;
+        return ERR_INVALID_PACKET_LEN;
     }
 
     int16_t state = _radio.readData(pkt.data, len);
+    _lastRadioErr = state;
     pkt.len = (state == RADIOLIB_ERR_NONE) ? static_cast<uint8_t>(len) : 0;
 
     // Skip RSSI/SNR SPI reads for intermediate fragments — saves ~100µs of

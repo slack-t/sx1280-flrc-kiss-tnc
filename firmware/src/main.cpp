@@ -98,8 +98,46 @@ static void noteRadioRxError() {
     auto& sm = StatsManager::instance();
     sm.lock();
     sm.get().radioRxErrors++;
+    sm.get().lastRadioErr     = radio.lastRadioErr();
+    sm.get().lastIrqStatus    = radio.lastIrqStatus();
+    sm.get().lastPacketLength = radio.lastPacketLength();
     sm.unlock();
     noteRadioError();
+}
+
+static void noteRadioRxSpuriousIrq() {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    sm.get().rxSpuriousIrqCount++;
+    sm.unlock();
+}
+
+static void noteRadioRxInvalidLength() {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    sm.get().rxInvalidLengthCount++;
+    sm.unlock();
+}
+
+static void noteRadioRxReadDataError() {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    sm.get().rxReadDataErrorCount++;
+    sm.unlock();
+}
+
+static void noteMalformedAck() {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    sm.get().rxMalformedAckCount++;
+    sm.unlock();
+}
+
+static void noteMalformedData() {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    sm.get().rxMalformedDataCount++;
+    sm.unlock();
 }
 
 static void noteAckQueueDrop() {
@@ -270,9 +308,15 @@ static void radioRxTask(void*) {
         int16_t err = radio.readPacket(pkt);
         if (err == ERR_SPURIOUS_IRQ) {
             // Spurious interrupt caught and handled. No action needed, do not increment error counts.
+            noteRadioRxSpuriousIrq();
             continue;
         }
         if (err != RADIOLIB_ERR_NONE || pkt.len < 1) {
+            if (err == ERR_INVALID_PACKET_LEN || pkt.len < 1) {
+                noteRadioRxInvalidLength();
+            } else {
+                noteRadioRxReadDataError();
+            }
             noteRadioRxError();
             continue;
         }
@@ -280,6 +324,7 @@ static void radioRxTask(void*) {
         if (framingPacketType(pkt) == LinkPacketType::ACK) {
             AckFrame ack;
             if (!framingParseAck(pkt, ack)) {
+                noteMalformedAck();
                 noteRadioRxError();
                 continue;
             }
@@ -303,6 +348,7 @@ static void radioRxTask(void*) {
 
         if (total_frags == 0 || total_frags > FRAMING_MAX_FRAGS ||
             idx >= total_frags || frag_data_len > FRAMING_FRAG_DATA) {
+            noteMalformedData();
             noteRadioRxError();
             continue;
         }
