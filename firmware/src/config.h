@@ -56,7 +56,7 @@
 
 // ── Packet / buffer limits ───────────────────────────────────────────────────
 // SX1280 FLRC maximum payload = 127 bytes.
-// Fragmented packets use a 4-byte link header, so the host MTU must match IP_MTU.
+// The general-purpose KISS payload limit is defined in framing/Framing.h.
 #define PACKET_MAX_LEN          127
 
 // ── Serial console / KISS transport discipline ──────────────────────────────

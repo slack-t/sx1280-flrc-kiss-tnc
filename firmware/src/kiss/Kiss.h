@@ -17,20 +17,20 @@ static constexpr uint8_t KISS_CONTROL_FRAME = 0x0F;
 
 struct KissFrame {
     uint8_t command = 0;
-    uint8_t data[IP_MTU];
+    uint8_t data[TNC_PAYLOAD_MAX_LEN];
     uint16_t len = 0;
 };
 
 class Kiss {
 public:
-    // Encode an IpFrame into a KISS frame.
-    // outBuf must be at least (2 * IP_MTU + 4) bytes (1011 bytes worst-case).
+    // Encode an opaque payload frame into a KISS data frame.
+    // outBuf must be at least (2 * TNC_PAYLOAD_MAX_LEN + 3) bytes.
     // Returns number of bytes written to outBuf, or 0 if outBuf is too small.
-    static size_t encode(const IpFrame& frame, uint8_t* outBuf, size_t outBufLen);
+    static size_t encode(const PayloadFrame& frame, uint8_t* outBuf, size_t outBufLen);
 
     // Feed one byte at a time into the decoder.
     // Returns true when a complete frame has been decoded into frame.
-    bool decode(uint8_t byte, IpFrame& frame);
+    bool decode(uint8_t byte, PayloadFrame& frame);
     bool decodeFrame(uint8_t byte, KissFrame& frame);
 
     // Reset decoder state (e.g. on sync loss)
@@ -43,7 +43,7 @@ private:
     enum class State : uint8_t { IDLE, IN_FRAME, ESCAPE };
 
     State    _state    = State::IDLE;
-    uint8_t  _buf[IP_MTU + 1];
+    uint8_t  _buf[TNC_PAYLOAD_MAX_LEN + 1];
     uint16_t _len      = 0;
     bool     _overflow = false;
 };

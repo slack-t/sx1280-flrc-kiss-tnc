@@ -138,12 +138,12 @@ int16_t Radio::readPacket(Packet& pkt) {
     _lastRadioErr = state;
     pkt.len = (state == RADIOLIB_ERR_NONE) ? static_cast<uint8_t>(len) : 0;
 
-    // Skip RSSI/SNR SPI reads for intermediate fragments — saves ~100µs of
-    // turnaround time between consecutive fragments of the same IP frame.
+    // Skip RSSI SPI reads for intermediate fragments — saves ~100µs of
+    // turnaround time between consecutive fragments of the same payload frame.
     bool shouldQueryRssi = true;
     if (state == RADIOLIB_ERR_NONE && pkt.len > 0) {
-        if (framingPacketType(pkt) == LinkPacketType::DATA &&
-            !framingIsRoundEnd(pkt)) {
+        DataFrameHeader header;
+        if (framingParseDataHeader(pkt, header) && !header.round_end) {
             shouldQueryRssi = false;
         }
     }

@@ -35,11 +35,11 @@ size_t Kiss::encodeFrame(uint8_t command, const uint8_t* payload, uint16_t paylo
     return i;
 }
 
-size_t Kiss::encode(const IpFrame& frame, uint8_t* outBuf, size_t outBufLen) {
+size_t Kiss::encode(const PayloadFrame& frame, uint8_t* outBuf, size_t outBufLen) {
     return encodeFrame(KISS_DATA_FRAME, frame.data, frame.len, outBuf, outBufLen);
 }
 
-bool Kiss::decode(uint8_t byte, IpFrame& frame) {
+bool Kiss::decode(uint8_t byte, PayloadFrame& frame) {
     KissFrame kissFrame;
     if (!decodeFrame(byte, kissFrame)) {
         return false;
@@ -91,7 +91,7 @@ bool Kiss::decodeFrame(uint8_t byte, KissFrame& frame) {
             } else if (byte == KISS_FESC) {
                 _state = State::ESCAPE;
             } else {
-                if (_len < IP_MTU + 1) {
+                if (_len < TNC_PAYLOAD_MAX_LEN + 1) {
                     _buf[_len++] = byte;
                 } else {
                     _overflow = true;
@@ -103,7 +103,7 @@ bool Kiss::decodeFrame(uint8_t byte, KissFrame& frame) {
             if (byte == KISS_TFEND || byte == KISS_TFESC) {
                 _state = State::IN_FRAME;
                 byte = (byte == KISS_TFEND) ? KISS_FEND : KISS_FESC;
-                if (_len < IP_MTU + 1) {
+                if (_len < TNC_PAYLOAD_MAX_LEN + 1) {
                     _buf[_len++] = byte;
                 } else {
                     _overflow = true;

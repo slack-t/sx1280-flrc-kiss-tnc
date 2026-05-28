@@ -38,8 +38,8 @@ static Radio   radio;
 static Display display;
 static ModemConfig modemConfig;
 
-static QueueHandle_t txQueue;   // IpFrame: SerialRX  → RadioTX
-static QueueHandle_t rxQueue;   // IpFrame: RadioRX   → SerialTX
+static QueueHandle_t txQueue;   // PayloadFrame: SerialRX → RadioTX
+static QueueHandle_t rxQueue;   // PayloadFrame: RadioRX  → SerialTX
 static QueueHandle_t ackQueue;  // AckFrame: RadioRX  → RadioTX
 
 static void refreshModemStats() {
@@ -53,7 +53,7 @@ static void refreshModemStats() {
 struct CompletedFrameCache {
     uint16_t seq         = FRAMING_SEQ_UNSET;
     uint8_t  total_frags = 0;
-    uint8_t  ack_mask    = 0;
+    uint32_t ack_mask    = 0;
     uint32_t tick_ms     = 0;
 };
 
@@ -352,22 +352,8 @@ static void noteAckQueueDrop() {
     noteQueueDrop();
 }
 
-static bool ipv4FrameLooksComplete(const IpFrame& frame) {
-    if (frame.len < 20) {
-        return false;
-    }
-    const uint8_t version = static_cast<uint8_t>(frame.data[0] >> 4);
-    const uint8_t ihl = static_cast<uint8_t>((frame.data[0] & 0x0Fu) * 4u);
-    if (version != 4 || ihl < 20 || frame.len < ihl) {
-        return false;
-    }
-    const uint16_t total_len = static_cast<uint16_t>((static_cast<uint16_t>(frame.data[2]) << 8) |
-                                                     static_cast<uint16_t>(frame.data[3]));
-    return total_len >= ihl && total_len <= frame.len;
-}
-
 static void finalizeReassembly(Reassembler& ra, CompletedFrameCache& completed) {
-    IpFrame frame;
+    PayloadFrame frame;
     frame.len = 0;
     for (uint8_t i = 0; i < ra.total_frags; i++) {
         ARQ_LOG("[ARQ RX:ASSEMBLE seq=%04x i=%u flen=%u]\n",
@@ -378,14 +364,6 @@ static void finalizeReassembly(Reassembler& ra, CompletedFrameCache& completed) 
         frame.len += ra.frag_len[i];
     }
     frame.rssi = ra.last_rssi;
-
-    if (!ipv4FrameLooksComplete(frame)) {
-        ARQ_LOG("[ARQ RX:FAIL seq=%04x tot=%u mask=%02x reason=ipv4_check len=%u]\n",
-                ra.seq, ra.total_frags, ra.received_mask, frame.len);
-        noteRadioError();
-        ra.reset();
-        return;
-    }
 
     auto& sm = StatsManager::instance();
     sm.lock();
@@ -409,8 +387,8 @@ static void finalizeReassembly(Reassembler& ra, CompletedFrameCache& completed) 
             sm.unlock();
         }
     }
-    ARQ_LOG("[ARQ RX:DONE seq=%04x tot=%u mask=%02x len=%u]\n",
-            ra.seq, ra.total_frags, ra.received_mask, frame.len);
+    ARQ_LOG("[ARQ RX:DONE seq=%04x tot=%u mask=%08lx len=%u]\n",
+            ra.seq, ra.total_frags, static_cast<unsigned long>(ra.received_mask), frame.len);
     completed.seq         = ra.seq;
     completed.total_frags = ra.total_frags;
     completed.ack_mask    = ra.received_mask;
@@ -426,10 +404,11 @@ static void sendAckForReassembly(Reassembler& ra) {
     AckFrame ack;
     ack.seq           = ra.seq;
     ack.total_frags   = ra.total_frags;
+    ack.window_base   = 0;
     ack.received_mask = ra.received_mask;
 
-    ARQ_LOG("[ARQ RX:ACK seq=%04x tot=%u mask=%02x complete=%d]\n",
-            ra.seq, ra.total_frags, ra.received_mask, (int)ra.isComplete());
+    ARQ_LOG("[ARQ RX:ACK seq=%04x tot=%u mask=%08lx complete=%d]\n",
+            ra.seq, ra.total_frags, static_cast<unsigned long>(ra.received_mask), (int)ra.isComplete());
 
     Packet pkt;
     framingBuildAckPacket(pkt, ack);
@@ -459,7 +438,7 @@ static void noteReassemblyDrop() {
 }
 
 // ── Task: Radio RX ────────────────────────────────────────────────────────────
-// Receives radio packets, reassembles fragments into IP frames, pushes to rxQueue.
+// Receives radio packets, reassembles fragments into opaque payloads, pushes to rxQueue.
 static void radioRxTask(void*) {
     Packet pkt;
     static Reassembler ra;   // static: lives in BSS, not on the task stack
@@ -499,8 +478,8 @@ static void radioRxTask(void*) {
                 continue;
             }
             if (ra.seq != FRAMING_SEQ_UNSET && !ra.isComplete()) {
-                ARQ_LOG("[ARQ RX:DROP seq=%04x tot=%u mask=%02x reason=idle]\n",
-                        ra.seq, ra.total_frags, ra.received_mask);
+                ARQ_LOG("[ARQ RX:DROP seq=%04x tot=%u mask=%08lx reason=idle]\n",
+                        ra.seq, ra.total_frags, static_cast<unsigned long>(ra.received_mask));
                 noteReassemblyDrop();
                 ra.reset();
                 continue;
@@ -548,30 +527,30 @@ static void radioRxTask(void*) {
             continue;
         }
 
-        const uint16_t seq          = framingPacketSeq(pkt);
-        const uint8_t idx           = framingFragmentIndex(pkt);
-        const uint8_t total_frags   = framingTotalFrags(pkt);
-        const uint8_t frag_data_len = framingPayloadLen(pkt);
-        const bool    round_end     = framingIsRoundEnd(pkt);
-        const uint32_t now_ms       = millis();
-
-        if (total_frags == 0 || total_frags > FRAMING_MAX_FRAGS ||
-            idx >= total_frags || frag_data_len > FRAMING_FRAG_DATA) {
+        DataFrameHeader dataHdr;
+        if (!framingParseDataHeader(pkt, dataHdr)) {
             noteMalformedData();
             noteRadioRxError();
             continue;
         }
+        const uint16_t seq          = dataHdr.seq;
+        const uint8_t idx           = dataHdr.frag_index;
+        const uint8_t total_frags   = dataHdr.total_frags;
+        const uint8_t frag_data_len = dataHdr.payload_len;
+        const bool    round_end     = dataHdr.round_end;
+        const uint32_t now_ms       = millis();
 
         if (completed.seq == seq &&
             completed.total_frags == total_frags &&
             (now_ms - completed.tick_ms) <= RADIO_DUP_CACHE_MS) {
-            ARQ_LOG("[ARQ RX:DUP seq=%04x tot=%u mask=%02x]\n",
-                    seq, total_frags, completed.ack_mask);
+            ARQ_LOG("[ARQ RX:DUP seq=%04x tot=%u mask=%08lx]\n",
+                    seq, total_frags, static_cast<unsigned long>(completed.ack_mask));
             // Re-ACK without re-delivering. Use AckFrame + Packet directly to
             // avoid a large Reassembler on the task stack.
             AckFrame dupAck;
             dupAck.seq           = completed.seq;
             dupAck.total_frags   = completed.total_frags;
+            dupAck.window_base   = 0;
             dupAck.received_mask = completed.ack_mask;
             Packet ackPkt;
             framingBuildAckPacket(ackPkt, dupAck);
@@ -591,8 +570,8 @@ static void radioRxTask(void*) {
 
         if (ra.seq != FRAMING_SEQ_UNSET &&
             (now_ms - ra.last_tick_ms > reassemblyTimeoutMs(ra.total_frags))) {
-            ARQ_LOG("[ARQ RX:DROP seq=%04x tot=%u mask=%02x reason=timeout]\n",
-                    ra.seq, ra.total_frags, ra.received_mask);
+            ARQ_LOG("[ARQ RX:DROP seq=%04x tot=%u mask=%08lx reason=timeout]\n",
+                    ra.seq, ra.total_frags, static_cast<unsigned long>(ra.received_mask));
             noteReassemblyDrop();
             ra.reset();
         }
@@ -613,7 +592,7 @@ static void radioRxTask(void*) {
             ra.total_frags = total_frags;
         }
 
-        const uint8_t bit          = static_cast<uint8_t>(1u << idx);
+        const uint32_t bit         = 1u << idx;
         const bool    is_new_frag  = !(ra.received_mask & bit);
 
         if (is_new_frag) {
@@ -626,9 +605,9 @@ static void radioRxTask(void*) {
             ra.ack_due_ms     = now_ms + ackFallbackDelayMs(total_frags);
         }
 
-        ARQ_LOG("[ARQ RX:FRAG seq=%04x tot=%u idx=%u new=%d re=%d mask=%02x flen=%u]\n",
+        ARQ_LOG("[ARQ RX:FRAG seq=%04x tot=%u idx=%u new=%d re=%d mask=%08lx flen=%u]\n",
                 seq, total_frags, idx, (int)is_new_frag, (int)round_end,
-                ra.received_mask, frag_data_len);
+                static_cast<unsigned long>(ra.received_mask), frag_data_len);
 
         if (round_end) {
             // Sender signals end of its TX burst. Schedule a short turnaround
@@ -642,14 +621,18 @@ static void radioRxTask(void*) {
 }
 
 // ── Task: Radio TX ────────────────────────────────────────────────────────────
-// Dequeues IP frames, fragments into ≤123-byte radio packets, retransmits missing
+// Dequeues opaque payload frames, fragments into radio packets, retransmits missing
 // fragments using selective-repeat ARQ until the receiver ACK bitmap is complete.
 static void radioTxTask(void*) {
-    IpFrame frame;
+    PayloadFrame frame;
     static uint16_t seq = 0;
 
     for (;;) {
         xQueueReceive(txQueue, &frame, portMAX_DELAY);
+        if (frame.len == 0 || frame.len > TNC_PAYLOAD_MAX_LEN) {
+            noteRadioError();
+            continue;
+        }
 
         xQueueReset(ackQueue);
         seq++;
@@ -658,7 +641,7 @@ static void radioTxTask(void*) {
         }
         const uint8_t total_frags = static_cast<uint8_t>(
             (frame.len + FRAMING_FRAG_DATA - 1) / FRAMING_FRAG_DATA);
-        uint8_t pending_mask = framingExpectedMask(total_frags);
+        uint32_t pending_mask = framingExpectedMask(total_frags);
         bool delivered = false;
 
         auto& sm = StatsManager::instance();
@@ -678,11 +661,11 @@ static void radioTxTask(void*) {
         }
 
         for (uint8_t round = 0; round < RADIO_ARQ_MAX_ROUNDS && pending_mask != 0; round++) {
-            ARQ_LOG("[ARQ TX:ROUND seq=%04x tot=%u round=%u pending=%02x]\n",
-                    seq, total_frags, round, pending_mask);
-            uint8_t sent_mask = 0;
+            ARQ_LOG("[ARQ TX:ROUND seq=%04x tot=%u round=%u pending=%08lx]\n",
+                    seq, total_frags, round, static_cast<unsigned long>(pending_mask));
+            uint32_t sent_mask = 0;
             for (uint8_t idx = 0; idx < total_frags; idx++) {
-                const uint8_t bit = static_cast<uint8_t>(1u << idx);
+                const uint32_t bit = 1u << idx;
                 if ((pending_mask & bit) == 0) {
                     continue;
                 }
@@ -692,8 +675,7 @@ static void radioTxTask(void*) {
                     (frame.len - offset < FRAMING_FRAG_DATA)
                         ? (frame.len - offset)
                         : FRAMING_FRAG_DATA);
-                const uint8_t later_pending =
-                    static_cast<uint8_t>(pending_mask & ~static_cast<uint8_t>((1u << (idx + 1)) - 1u));
+                const uint32_t later_pending = pending_mask & ~framingMaskThrough(idx);
                 const bool round_end = later_pending == 0;
 
                 if (sent_mask != 0) {
@@ -742,13 +724,16 @@ static void radioTxTask(void*) {
                 if (xQueueReceive(ackQueue, &ack, wait_ticks) != pdPASS) {
                     break;
                 }
-                if (ack.seq != seq || ack.total_frags != total_frags) {
+                if (ack.seq != seq || ack.total_frags != total_frags || ack.window_base != 0) {
                     continue;
                 }
-                ARQ_LOG("[ARQ TX:ACK seq=%04x tot=%u ack_mask=%02x pend=%02x->%02x]\n",
-                        seq, total_frags, ack.received_mask, pending_mask,
-                        static_cast<uint8_t>(pending_mask & ~ack.received_mask));
-                pending_mask &= static_cast<uint8_t>(~ack.received_mask);
+                const uint32_t expected_mask = framingExpectedMask(total_frags);
+                const uint32_t ack_mask = ack.received_mask & expected_mask;
+                ARQ_LOG("[ARQ TX:ACK seq=%04x tot=%u ack_mask=%08lx pend=%08lx->%08lx]\n",
+                        seq, total_frags, static_cast<unsigned long>(ack_mask),
+                        static_cast<unsigned long>(pending_mask),
+                        static_cast<unsigned long>(pending_mask & ~ack_mask));
+                pending_mask &= ~ack_mask;
                 got_ack = true;
                 break;
             }
@@ -758,8 +743,8 @@ static void radioTxTask(void*) {
                 sm.lock();
                 sm.get().arqAckTimeoutCount++;
                 sm.unlock();
-                ARQ_LOG("[ARQ TX:TIMEOUT seq=%04x tot=%u round=%u pending=%02x]\n",
-                        seq, total_frags, round, pending_mask);
+                ARQ_LOG("[ARQ TX:TIMEOUT seq=%04x tot=%u round=%u pending=%08lx]\n",
+                        seq, total_frags, round, static_cast<unsigned long>(pending_mask));
             }
 
             if (pending_mask == 0) {
@@ -780,8 +765,8 @@ static void radioTxTask(void*) {
             sm.lock();
             sm.get().arqFramesFailed++;
             sm.unlock();
-            ARQ_LOG("[ARQ TX:FAIL seq=%04x tot=%u pending=%02x]\n",
-                    seq, total_frags, pending_mask);
+            ARQ_LOG("[ARQ TX:FAIL seq=%04x tot=%u pending=%08lx]\n",
+                    seq, total_frags, static_cast<unsigned long>(pending_mask));
             noteRadioError();
         }
     }
@@ -792,7 +777,7 @@ static void radioTxTask(void*) {
 static void serialRxTask(void*) {
     static Kiss     decoder;
     static KissFrame kissFrame;
-    static IpFrame  frame;
+    static PayloadFrame frame;
     uint32_t last_rx_ms = 0;
 
     for (;;) {
@@ -847,11 +832,11 @@ static void serialRxTask(void*) {
 }
 
 // ── Task: Serial TX ───────────────────────────────────────────────────────────
-// Takes IP frames from rxQueue, KISS-encodes, writes to USB CDC.
+// Takes opaque payload frames from rxQueue, KISS-encodes, writes to USB CDC.
 static void serialTxTask(void*) {
     // Worst-case KISS encoded size: 2 bytes per payload byte + 3 framing bytes
-    static uint8_t encBuf[IP_MTU * 2 + 3];
-    IpFrame frame;
+    static uint8_t encBuf[TNC_PAYLOAD_MAX_LEN * 2 + 3];
+    PayloadFrame frame;
     for (;;) {
         xQueueReceive(rxQueue, &frame, portMAX_DELAY);
         size_t encLen = Kiss::encode(frame, encBuf, sizeof(encBuf));
@@ -965,8 +950,8 @@ void setup() {
     BOOT_LOG_LN("[main] Continuous RX mode active.");
 
     BOOT_LOG_LN("[main] Creating FreeRTOS communication queues...");
-    txQueue = xQueueCreate(TX_QUEUE_DEPTH, sizeof(IpFrame));
-    rxQueue = xQueueCreate(RX_QUEUE_DEPTH, sizeof(IpFrame));
+    txQueue = xQueueCreate(TX_QUEUE_DEPTH, sizeof(PayloadFrame));
+    rxQueue = xQueueCreate(RX_QUEUE_DEPTH, sizeof(PayloadFrame));
     ackQueue = xQueueCreate(8, sizeof(AckFrame));
     if (txQueue == nullptr || rxQueue == nullptr || ackQueue == nullptr) {
         BOOT_LOG_LN("[main] CRITICAL: Failed to create FreeRTOS queues!");
@@ -994,8 +979,8 @@ void setup() {
     taskStatus = xTaskCreatePinnedToCore(displayTask,  "display",  STACK_DISPLAY,   nullptr, PRIO_DISPLAY, nullptr, 0);
     BOOT_LOG("[main] Spawn task 'display' on Core 0 -> %s\n", taskStatus == pdPASS ? "OK" : "FAILED");
 
-    BOOT_LOG("[main] IP MTU: %u bytes (%u fragments x %u bytes)\n",
-             IP_MTU, FRAMING_MAX_FRAGS, FRAMING_FRAG_DATA);
+    BOOT_LOG("[main] Payload MTU: %u bytes (%u fragments max, %u bytes/frag)\n",
+             TNC_PAYLOAD_MAX_LEN, FRAMING_MAX_FRAGS, FRAMING_FRAG_DATA);
     BOOT_LOG("[main] ARQ: %u rounds, ACK timeout %u ms, fallback ACK %u ms\n",
              RADIO_ARQ_MAX_ROUNDS, RADIO_ACK_TIMEOUT_MS, RADIO_ACK_FALLBACK_DELAY_MS);
     BOOT_LOG_LN("[main] System initialization complete. KISS TNC operational.");
