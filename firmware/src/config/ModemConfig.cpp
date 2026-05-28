@@ -74,6 +74,8 @@ bool modemValidateConfig(const ModemConfig& cfg, char* error, size_t errorLen) {
     if (cfg.txPowerDbm < -18 || cfg.txPowerDbm > 13) return fail("power must be -18..13 dBm");
     if (!isAllowedPreamble(cfg.preambleBits)) return fail("preamble must be 4,8,12,16,20,24,28,32");
     if (!(cfg.shaping == RADIOLIB_SHAPING_0_5 || cfg.shaping == RADIOLIB_SHAPING_1_0)) return fail("bt must be 0 or 1");
+    if (cfg.transportMode != TransportMode::GENERIC_FRAGMENTED &&
+        cfg.transportMode != TransportMode::NATIVE_PACKET) return fail("transport must be generic or native");
     return true;
 }
 
@@ -102,7 +104,7 @@ void modemFormatConfig(const ModemConfig& cfg, char* out, size_t outLen) {
     char sync[16];
     modemFormatSyncWord(cfg.syncWord, sync, sizeof(sync));
     snprintf(out, outLen,
-             "freq=%.3f bitrate=%.0f cr=%u power=%d preamble=%u bt=%u sync=%s lbt=%d",
+             "freq=%.3f bitrate=%.0f cr=%u power=%d preamble=%u bt=%u sync=%s lbt=%d transport=%s",
              cfg.freqMHz,
              cfg.bitrateKbps,
              cfg.codingRate,
@@ -110,7 +112,8 @@ void modemFormatConfig(const ModemConfig& cfg, char* out, size_t outLen) {
              cfg.preambleBits,
              cfg.shaping == RADIOLIB_SHAPING_0_5 ? 0u : 1u,
              sync,
-             cfg.lbtRssiThresholdDbm);
+             cfg.lbtRssiThresholdDbm,
+             modemTransportModeName(cfg.transportMode));
 }
 
 uint16_t modemConfigChecksum(const ModemConfig& cfg) {
@@ -139,5 +142,13 @@ const char* modemConfigSourceName(ModemConfigSource source) {
         case ModemConfigSource::DEFAULTS:
         default:
             return "defaults";
+    }
+}
+
+const char* modemTransportModeName(TransportMode mode) {
+    switch (mode) {
+        case TransportMode::NATIVE_PACKET: return "native";
+        case TransportMode::GENERIC_FRAGMENTED:
+        default:                           return "generic";
     }
 }

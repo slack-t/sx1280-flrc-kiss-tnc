@@ -26,6 +26,7 @@ FIELDS = [
     ("bt", "BT shaping", "0=0.5, 1=1.0"),
     ("sync", "Sync word", "8 hex chars, e.g. 7ec5a23d"),
     ("lbt", "LBT RSSI dBm", "0 disables LBT"),
+    ("transport", "Transport mode", "generic (ARQ) or native (single packet, max 125B)"),
 ]
 
 

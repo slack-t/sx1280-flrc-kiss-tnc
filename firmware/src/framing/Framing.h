@@ -13,8 +13,9 @@ struct Packet {
 };
 
 enum class LinkPacketType : uint8_t {
-    DATA = 0,
-    ACK  = 1,
+    DATA   = 0,
+    ACK    = 1,
+    NATIVE = 2,
 };
 
 // ── Link header ────────────────────────────────────────────────────────────────
@@ -49,6 +50,14 @@ static constexpr uint8_t  FRAMING_ACK_MASK_BYTES  = 4;
 static constexpr uint8_t  FRAMING_ACK_WINDOW_BITS = FRAMING_ACK_MASK_BYTES * 8u;
 static constexpr uint16_t FRAMING_SEQ_UNSET       = 0xFFFF;
 static constexpr uint16_t TNC_PAYLOAD_MAX_LEN     = 1024;
+
+// Native packet: 2-byte header (version/type + payload_len), rest is payload.
+// Maximum single-packet payload for native transport mode.
+static constexpr uint8_t  FRAMING_NATIVE_HDR_LEN    = 2;
+static constexpr uint8_t  FRAMING_NATIVE_MAX_PAYLOAD =
+    static_cast<uint8_t>(PACKET_MAX_LEN - FRAMING_NATIVE_HDR_LEN);
+static_assert(PACKET_MAX_LEN > FRAMING_NATIVE_HDR_LEN,
+              "PACKET_MAX_LEN too small for native header");
 
 // Data bytes per fragment. Fragmented packets use a fixed 7-byte link header.
 static constexpr uint8_t FRAMING_FRAG_DATA =
@@ -213,6 +222,34 @@ inline void framingBuildDataPacket(Packet& pkt,
     } else {
         pkt.len = static_cast<uint8_t>(FRAMING_DATA_HDR_LEN + payload_len);
     }
+}
+
+// Native packet:
+//   byte 0  [7:4]=version, [3:0]=type (NATIVE=2)
+//   byte 1  payload length
+//   bytes 2..126  payload (zero-padded to PACKET_MAX_LEN)
+
+inline void framingBuildNativePacket(Packet& pkt, const uint8_t* payload, uint8_t payload_len) {
+    pkt.data[0] = framingEncodeVersionType(LinkPacketType::NATIVE);
+    pkt.data[1] = payload_len;
+    if (payload_len > 0) {
+        memcpy(pkt.data + FRAMING_NATIVE_HDR_LEN, payload, payload_len);
+    }
+    if (payload_len < FRAMING_NATIVE_MAX_PAYLOAD) {
+        memset(pkt.data + FRAMING_NATIVE_HDR_LEN + payload_len, 0,
+               FRAMING_NATIVE_MAX_PAYLOAD - payload_len);
+    }
+    pkt.len = PACKET_MAX_LEN;
+}
+
+inline bool framingParseNativePayload(const Packet& pkt, uint8_t& payload_len) {
+    if (pkt.len < FRAMING_NATIVE_HDR_LEN) { return false; }
+    if (!framingHasValidVersion(pkt) || framingPacketType(pkt) != LinkPacketType::NATIVE) {
+        return false;
+    }
+    payload_len = pkt.data[1];
+    if (payload_len > FRAMING_NATIVE_MAX_PAYLOAD) { return false; }
+    return pkt.len >= static_cast<uint8_t>(FRAMING_NATIVE_HDR_LEN + payload_len);
 }
 
 // ── Fragment reassembler ───────────────────────────────────────────────────────

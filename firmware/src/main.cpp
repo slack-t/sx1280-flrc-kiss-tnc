@@ -60,6 +60,7 @@ static void refreshModemStats() {
     sm.get().configCrc16 = modemConfigChecksum(modemConfig);
     sm.get().configVersion = MODEM_CONFIG_PROTOCOL_VERSION;
     sm.get().configSource = static_cast<uint8_t>(modemConfigSource);
+    sm.get().transportMode = static_cast<uint8_t>(modemConfig.transportMode);
     sm.unlock();
 }
 
@@ -191,6 +192,13 @@ static void noteMalformedData() {
     auto& sm = StatsManager::instance();
     sm.lock();
     sm.get().rxMalformedDataCount++;
+    sm.unlock();
+}
+
+static void noteNativeOversizeDrop() {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    sm.get().nativeOversizeDropCount++;
     sm.unlock();
 }
 
@@ -366,6 +374,15 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
                 return;
             }
             next.lbtRssiThresholdDbm = static_cast<int16_t>(ivalue);
+        } else if (strcasecmp(key, "transport") == 0) {
+            if (strcasecmp(value, "native") == 0) {
+                next.transportMode = TransportMode::NATIVE_PACKET;
+            } else if (strcasecmp(value, "generic") == 0) {
+                next.transportMode = TransportMode::GENERIC_FRAGMENTED;
+            } else {
+                sendControlResponse("ERR invalid transport (use native or generic)");
+                return;
+            }
         } else {
             sendControlResponse("ERR unknown key");
             return;
@@ -584,6 +601,38 @@ static void radioRxTask(void*) {
             continue;
         }
 
+        // ── Native single-packet RX path ─────────────────────────────────────
+        if (framingPacketType(pkt) == LinkPacketType::NATIVE) {
+            uint8_t payload_len = 0;
+            if (!framingParseNativePayload(pkt, payload_len)) {
+                noteMalformedData();
+                noteRadioRxError();
+                continue;
+            }
+            PayloadFrame rxFrame;
+            rxFrame.len  = payload_len;
+            rxFrame.rssi = pkt.rssi;
+            if (payload_len > 0) {
+                memcpy(rxFrame.data, pkt.data + FRAMING_NATIVE_HDR_LEN, payload_len);
+            }
+            {
+                auto& sm = StatsManager::instance();
+                sm.lock();
+                sm.get().nativeRxCount++;
+                sm.get().rxCount++;
+                sm.get().rxBytes   += payload_len;
+                sm.get().rssi       = rxFrame.rssi;
+                sm.get().radioState = RadioState::RX;
+                sm.unlock();
+            }
+            if (xQueueSend(rxQueue, &rxFrame, pdMS_TO_TICKS(RX_QUEUE_TIMEOUT_MS)) != pdPASS) {
+                noteQueueDrop();
+                noteRadioError();
+            }
+            continue;
+        }
+
+        // ── Generic fragmented ARQ RX path ────────────────────────────────────
         DataFrameHeader dataHdr;
         if (!framingParseDataHeader(pkt, dataHdr)) {
             noteMalformedData();
@@ -691,6 +740,48 @@ static void radioTxTask(void*) {
             continue;
         }
 
+        // LBT-CSMA: sense channel before any first transmission.
+        for (int lbt = 0; radio.isChannelBusy(); lbt++) {
+            if (lbt >= RADIO_LBT_MAX_RETRIES) break;
+            uint32_t backoff_ms = RADIO_LBT_BACKOFF_MIN_MS +
+                (esp_random() % (RADIO_LBT_BACKOFF_MAX_MS - RADIO_LBT_BACKOFF_MIN_MS + 1));
+            vTaskDelay(pdMS_TO_TICKS(backoff_ms));
+        }
+
+        // ── Native single-packet TX path ─────────────────────────────────────
+        if (modemConfig.transportMode == TransportMode::NATIVE_PACKET) {
+            if (frame.len > FRAMING_NATIVE_MAX_PAYLOAD) {
+                noteNativeOversizeDrop();
+                continue;
+            }
+            Packet pkt;
+            framingBuildNativePacket(pkt, frame.data, static_cast<uint8_t>(frame.len));
+            {
+                auto& sm = StatsManager::instance();
+                sm.lock();
+                sm.get().radioState = RadioState::TX;
+                sm.unlock();
+            }
+            int16_t err = radio.transmit(pkt, true);
+            {
+                auto& sm = StatsManager::instance();
+                sm.lock();
+                sm.get().radioState = RadioState::IDLE;
+                if (err == RADIOLIB_ERR_NONE) {
+                    sm.get().nativeTxCount++;
+                    sm.get().txCount++;
+                    sm.get().txBytes += frame.len;
+                } else {
+                    sm.get().errorCount++;
+                    sm.get().radioTxErrors++;
+                    sm.get().radioState = RadioState::ERROR;
+                }
+                sm.unlock();
+            }
+            continue;
+        }
+
+        // ── Generic fragmented ARQ path ───────────────────────────────────────
         xQueueReset(ackQueue);
         seq++;
         if (seq == FRAMING_SEQ_UNSET) {
@@ -708,14 +799,6 @@ static void radioTxTask(void*) {
 
         ARQ_LOG("[ARQ TX:START seq=%04x tot=%u len=%u]\n",
                 seq, total_frags, frame.len);
-
-        // LBT-CSMA: sense channel before the first fragment only.
-        for (int lbt = 0; radio.isChannelBusy(); lbt++) {
-            if (lbt >= RADIO_LBT_MAX_RETRIES) break;
-            uint32_t backoff_ms = RADIO_LBT_BACKOFF_MIN_MS +
-                (esp_random() % (RADIO_LBT_BACKOFF_MAX_MS - RADIO_LBT_BACKOFF_MIN_MS + 1));
-            vTaskDelay(pdMS_TO_TICKS(backoff_ms));
-        }
 
         for (uint8_t round = 0; round < RADIO_ARQ_MAX_ROUNDS && pending_mask != 0; round++) {
             ARQ_LOG("[ARQ TX:ROUND seq=%04x tot=%u round=%u pending=%08lx]\n",

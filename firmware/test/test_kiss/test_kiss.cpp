@@ -390,6 +390,55 @@ void test_large_frame_roundtrip() {
     TEST_ASSERT_EQUAL_MEMORY(original.data, decoded.data, original.len);
 }
 
+void test_native_packet_roundtrip() {
+    uint8_t payload[32];
+    for (uint8_t i = 0; i < sizeof(payload); i++) { payload[i] = i; }
+
+    Packet pkt;
+    framingBuildNativePacket(pkt, payload, sizeof(payload));
+
+    TEST_ASSERT_EQUAL_UINT8(PACKET_MAX_LEN, pkt.len);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(LinkPacketType::NATIVE),
+                            static_cast<uint8_t>(framingPacketType(pkt)));
+
+    uint8_t decoded_len = 0;
+    TEST_ASSERT_TRUE(framingParseNativePayload(pkt, decoded_len));
+    TEST_ASSERT_EQUAL_UINT8(sizeof(payload), decoded_len);
+    TEST_ASSERT_EQUAL_MEMORY(payload, pkt.data + FRAMING_NATIVE_HDR_LEN, sizeof(payload));
+}
+
+void test_native_packet_max_payload() {
+    uint8_t payload[FRAMING_NATIVE_MAX_PAYLOAD];
+    for (uint8_t i = 0; i < FRAMING_NATIVE_MAX_PAYLOAD; i++) { payload[i] = i; }
+
+    Packet pkt;
+    framingBuildNativePacket(pkt, payload, FRAMING_NATIVE_MAX_PAYLOAD);
+
+    uint8_t decoded_len = 0;
+    TEST_ASSERT_TRUE(framingParseNativePayload(pkt, decoded_len));
+    TEST_ASSERT_EQUAL_UINT8(FRAMING_NATIVE_MAX_PAYLOAD, decoded_len);
+    TEST_ASSERT_EQUAL_MEMORY(payload, pkt.data + FRAMING_NATIVE_HDR_LEN, FRAMING_NATIVE_MAX_PAYLOAD);
+}
+
+void test_native_packet_oversize_rejected() {
+    Packet pkt;
+    pkt.data[0] = static_cast<uint8_t>((FRAMING_VERSION << FRAMING_VERSION_SHIFT) |
+                                       static_cast<uint8_t>(LinkPacketType::NATIVE));
+    pkt.data[1] = FRAMING_NATIVE_MAX_PAYLOAD + 1;  // oversize
+    pkt.len = PACKET_MAX_LEN;
+
+    uint8_t out = 0;
+    TEST_ASSERT_FALSE(framingParseNativePayload(pkt, out));
+}
+
+void test_native_parse_rejects_data_packet() {
+    Packet pkt;
+    framingBuildDataPacket(pkt, 0x0001, 0, 1, true, nullptr, 0);
+
+    uint8_t out = 0;
+    TEST_ASSERT_FALSE(framingParseNativePayload(pkt, out));
+}
+
 int main(int argc, char** argv) {
     UNITY_BEGIN();
     RUN_TEST(test_roundtrip_all_bytes);
@@ -408,5 +457,9 @@ int main(int argc, char** argv) {
     RUN_TEST(test_oversized_frame_then_valid_frame_resyncs_cleanly);
     RUN_TEST(test_369_byte_regression_reproducer);
     RUN_TEST(test_369_byte_frame_after_noise_prefix);
+    RUN_TEST(test_native_packet_roundtrip);
+    RUN_TEST(test_native_packet_max_payload);
+    RUN_TEST(test_native_packet_oversize_rejected);
+    RUN_TEST(test_native_parse_rejects_data_packet);
     return UNITY_END();
 }

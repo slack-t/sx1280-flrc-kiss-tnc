@@ -13,6 +13,11 @@ enum class ModemConfigSource : uint8_t {
     RESET_HELD = 2,
 };
 
+enum class TransportMode : uint8_t {
+    GENERIC_FRAGMENTED = 0,
+    NATIVE_PACKET      = 1,
+};
+
 struct ModemConfig {
     uint32_t magic = MODEM_CONFIG_MAGIC;
     float freqMHz = RADIO_FREQ_MHZ;
@@ -23,6 +28,7 @@ struct ModemConfig {
     uint8_t shaping = RADIO_BT;
     uint8_t syncWord[RADIO_SYNC_WORD_LEN] = RADIO_SYNC_WORD_BYTES;
     int16_t lbtRssiThresholdDbm = RADIO_LBT_RSSI_THRESHOLD_DBM;
+    TransportMode transportMode = TransportMode::GENERIC_FRAGMENTED;
 };
 
 ModemConfig modemDefaultConfig();
@@ -35,3 +41,4 @@ bool modemParseSyncWord(const char* text, uint8_t out[RADIO_SYNC_WORD_LEN]);
 void modemFormatSyncWord(const uint8_t sync[RADIO_SYNC_WORD_LEN], char* out, size_t outLen);
 uint16_t modemConfigChecksum(const ModemConfig& cfg);
 const char* modemConfigSourceName(ModemConfigSource source);
+const char* modemTransportModeName(TransportMode mode);

@@ -48,10 +48,14 @@ struct Stats {
     uint32_t rxMalformedDataCount = 0;
     uint32_t kissMalformedFrameCount = 0;
     uint32_t kissOversizeDropCount = 0;
+    uint32_t nativeTxCount           = 0;
+    uint32_t nativeRxCount           = 0;
+    uint32_t nativeOversizeDropCount = 0;
     int16_t  lastRadioErr        = 0;
     uint16_t lastIrqStatus       = 0;
     uint16_t lastPacketLength    = 0;
     RadioState radioState = RadioState::IDLE;
+    uint8_t  transportMode       = 0;
     float    freqMHz     = 0.0f;
     uint32_t bitrateKbps = 0;
     uint8_t  codingRate  = 0;

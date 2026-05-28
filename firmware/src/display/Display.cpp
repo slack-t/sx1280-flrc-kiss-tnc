@@ -82,7 +82,12 @@ void Display::update(const Stats& s) {
     }
 
     _sprite.setCursor(2, 2);
-    _sprite.print("SX1280 FLRC TNC");
+    {
+        char titleBuf[20];
+        snprintf(titleBuf, sizeof(titleBuf), "SX1280 FLRC %s",
+                 (s.transportMode == static_cast<uint8_t>(TransportMode::NATIVE_PACKET)) ? "[N]" : "[G]");
+        _sprite.print(titleBuf);
+    }
 
     // Print State in Header (right-aligned)
     const char* stateStr = "IDLE";
@@ -280,14 +285,22 @@ void Display::update(const Stats& s) {
     _sprite.setCursor(68, 39);
     _sprite.print(buf);
 
-    // --- Row 4 (Y = 51) ---
-    snprintf(buf, sizeof(buf), "RTY:%lu", s.arqRetryCount);
-    _sprite.setCursor(2, 51);
-    _sprite.print(buf);
-
-    snprintf(buf, sizeof(buf), "ATO:%lu", s.arqAckTimeoutCount);
-    _sprite.setCursor(68, 51);
-    _sprite.print(buf);
+    // --- Row 4 (Y = 51): mode-dependent counters ---
+    if (s.transportMode == static_cast<uint8_t>(TransportMode::NATIVE_PACKET)) {
+        snprintf(buf, sizeof(buf), "NTX:%lu", s.nativeTxCount);
+        _sprite.setCursor(2, 51);
+        _sprite.print(buf);
+        snprintf(buf, sizeof(buf), "NRX:%lu", s.nativeRxCount);
+        _sprite.setCursor(68, 51);
+        _sprite.print(buf);
+    } else {
+        snprintf(buf, sizeof(buf), "RTY:%lu", s.arqRetryCount);
+        _sprite.setCursor(2, 51);
+        _sprite.print(buf);
+        snprintf(buf, sizeof(buf), "ATO:%lu", s.arqAckTimeoutCount);
+        _sprite.setCursor(68, 51);
+        _sprite.print(buf);
+    }
 
     // 5. Push double-buffered frame to display
     _sprite.pushSprite(&_lcd, 0, 0);
