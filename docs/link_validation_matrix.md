@@ -12,10 +12,22 @@ Use the quiet bridge mode for benchmark runs:
 python pi-daemon/kiss_tun.py --port /dev/ttyACM0 --addr 10.0.0.1/30 --mtu 246 --quiet
 ```
 
+Equivalent Rust bridge command:
+
+```sh
+pi-daemon-rust/target/release/kiss-tun-rs --port /dev/ttyACM0 --addr 10.0.0.1/30 --mtu 246 --quiet
+```
+
 On the peer, use the matching address:
 
 ```sh
 python pi-daemon/kiss_tun.py --port /dev/ttyACM0 --addr 10.0.0.2/30 --mtu 246 --quiet
+```
+
+Equivalent Rust peer command:
+
+```sh
+pi-daemon-rust/target/release/kiss-tun-rs --port /dev/ttyACM0 --addr 10.0.0.2/30 --mtu 246 --quiet
 ```
 
 Recommended host queue settings for the validation run:
@@ -27,7 +39,8 @@ sudo tc qdisc replace dev tun0 root fq_codel
 sudo iptables -t mangle -A OUTPUT -o tun0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 206
 ```
 
-For diagnostic runs only, add `--debug-ip` and remove `--quiet`.
+For diagnostic runs only, add `--debug-ip` and remove `--quiet`. Both the
+Python and Rust bridges support these flags.
 
 ## Automated Runner
 

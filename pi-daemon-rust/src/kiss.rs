@@ -278,11 +278,18 @@ mod tests {
                     break;
                 }
             }
-            if complete { break; }
+            if complete {
+                break;
+            }
         }
 
         assert!(complete, "369-byte frame not completed");
-        assert_eq!(decoded.len(), 369, "369-byte frame truncated to {}", decoded.len());
+        assert_eq!(
+            decoded.len(),
+            369,
+            "369-byte frame truncated to {}",
+            decoded.len()
+        );
         assert_eq!(decoded, payload);
     }
 
@@ -297,8 +304,8 @@ mod tests {
         let mut complete = false;
 
         let noise_prefix = vec![
-            0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A,
-            0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32,
+            0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30,
+            0x31, 0x32,
         ];
         for b in noise_prefix {
             assert!(!decoder.feed(b, &mut decoded));
@@ -323,7 +330,12 @@ mod tests {
         }
 
         assert!(complete, "369-byte frame after noise not completed");
-        assert_eq!(decoded.len(), 369, "369-byte frame after noise truncated to {}", decoded.len());
+        assert_eq!(
+            decoded.len(),
+            369,
+            "369-byte frame after noise truncated to {}",
+            decoded.len()
+        );
         assert_eq!(decoded, payload);
     }
 }

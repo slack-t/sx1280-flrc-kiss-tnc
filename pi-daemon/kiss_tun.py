@@ -260,11 +260,6 @@ def run_bridge(tun, ser, mtu: int, debug_ip: bool, quiet: bool) -> threading.Eve
 
 
 def main():
-    try:
-        import pytun
-    except ImportError:
-        sys.exit("python-pytun not found — run: pip install python-pytun")
-
     parser = argparse.ArgumentParser(description="KISS TNC ↔ tun0 bridge for SX1280 FLRC TNC")
     parser.add_argument("--port",  default="/dev/ttyACM0",
                         help="Serial port (default: /dev/ttyACM0)")
@@ -281,6 +276,11 @@ def main():
     parser.add_argument("--quiet", action="store_true",
                         help="Suppress per-packet and lifecycle logs for benchmark runs")
     args = parser.parse_args()
+
+    try:
+        import pytun
+    except ImportError:
+        sys.exit("python-pytun not found — run: pip install python-pytun")
 
     tun = pytun.TunTapDevice(name=args.name, flags=pytun.IFF_TUN | pytun.IFF_NO_PI)
     interface = configure_tun(tun, args.addr, args.mtu)
