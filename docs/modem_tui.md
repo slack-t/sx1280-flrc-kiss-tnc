@@ -11,6 +11,14 @@ to the same serial port:
 python3 pi-daemon/modem_tui.py --port /dev/ttyACM0
 ```
 
+Opening the ESP32-S3 USB CDC port may reset the board on some hosts. The TUI
+waits after opening and retries commands by default. If your board boots slowly,
+increase the wait:
+
+```sh
+python3 pi-daemon/modem_tui.py --port /dev/ttyACM0 --boot-wait 5 --timeout 3
+```
+
 Settings are applied immediately and saved in ESP32 NVS.
 
 Configurable fields:

@@ -80,25 +80,46 @@ class KissDecoder:
 
 
 class ModemClient:
-    def __init__(self, port: str, baud: int, timeout: float):
-        self.ser = serial.Serial(port, baud, timeout=0)
+    def __init__(self, port: str, baud: int, timeout: float,
+                 boot_wait: float, retries: int):
+        self.ser = serial.Serial(
+            port=port,
+            baudrate=baud,
+            timeout=0,
+            rtscts=False,
+            dsrdtr=False,
+        )
+        # Some ESP32-S3 USB CDC setups reset on host open/control-line changes.
+        # Keep control lines inactive and give firmware time to boot if reset.
+        self.ser.dtr = False
+        self.ser.rts = False
+        if boot_wait > 0:
+            time.sleep(boot_wait)
+        self.ser.reset_input_buffer()
         self.timeout = timeout
+        self.retries = max(1, retries)
         self.decoder = KissDecoder()
 
     def close(self):
         self.ser.close()
 
     def command(self, text: str) -> str:
-        self.ser.reset_input_buffer()
-        self.ser.write(kiss_encode(KISS_CONTROL_FRAME, text.encode("ascii")))
-        deadline = time.monotonic() + self.timeout
-        while time.monotonic() < deadline:
-            waiting = self.ser.in_waiting
-            if waiting:
-                for command, payload in self.decoder.feed(self.ser.read(waiting)):
-                    if command == KISS_CONTROL_FRAME:
-                        return payload.decode("ascii", errors="replace")
-            time.sleep(0.01)
+        frame = kiss_encode(KISS_CONTROL_FRAME, text.encode("ascii"))
+        for attempt in range(self.retries):
+            self.ser.reset_input_buffer()
+            self.decoder = KissDecoder()
+            self.ser.write(frame)
+            self.ser.flush()
+            deadline = time.monotonic() + self.timeout
+            while time.monotonic() < deadline:
+                waiting = self.ser.in_waiting
+                if waiting:
+                    for command, payload in self.decoder.feed(self.ser.read(waiting)):
+                        if command == KISS_CONTROL_FRAME:
+                            return payload.decode("ascii", errors="replace")
+                time.sleep(0.01)
+            if attempt + 1 < self.retries:
+                time.sleep(0.25)
         raise TimeoutError("no response from TNC")
 
 
@@ -183,10 +204,14 @@ def main():
     parser.add_argument("--port", default="/dev/ttyACM0", help="Serial port (default: /dev/ttyACM0)")
     parser.add_argument("--baud", type=int, default=921600,
                         help="Baud rate (ignored by ESP32-S3 native USB CDC)")
-    parser.add_argument("--timeout", type=float, default=1.5, help="Command timeout in seconds")
+    parser.add_argument("--timeout", type=float, default=2.0, help="Command timeout in seconds")
+    parser.add_argument("--boot-wait", type=float, default=3.0,
+                        help="Seconds to wait after opening serial before first command")
+    parser.add_argument("--retries", type=int, default=5,
+                        help="Control command retries before failing")
     args = parser.parse_args()
 
-    client = ModemClient(args.port, args.baud, args.timeout)
+    client = ModemClient(args.port, args.baud, args.timeout, args.boot_wait, args.retries)
     try:
         curses.wrapper(run_tui, client)
     finally:
