@@ -21,7 +21,9 @@ import sys
 import threading
 import time
 import errno
+import errno
 import serial
+import serial_integrity
 
 # ── KISS constants ────────────────────────────────────────────────────────────
 FEND  = 0xC0
@@ -31,12 +33,12 @@ TFESC = 0xDD
 KISS_DATA_PORT = 0x00
 
 # Firmware payload cap for opaque KISS frames.
-FIRMWARE_PAYLOAD_CAP = 1024
+FIRMWARE_PAYLOAD_CAP = 1016
 
 # Conservative default for the optional IP adapter. This stays below the
 # firmware payload cap and avoids pushing normal IP traffic straight into the
 # larger multi-fragment regimes by default.
-DEFAULT_MTU = 246
+DEFAULT_MTU = 238
 
 # Seconds to wait before retrying a lost serial connection
 RECONNECT_DELAY_S = 5
@@ -250,7 +252,8 @@ def tun_to_radio(tun, ser, mtu: int, stop_event: threading.Event, debug_ip: bool
                 continue
             log_info(f"[kiss_tun] tun0 -> radio: sending {len(pkt)} bytes", quiet)
             log_packet(Direction.TUN_TO_RADIO, pkt, debug_ip)
-            encoded = kiss_encode(pkt)
+            wrapped = serial_integrity.wrap_payload(pkt)
+            encoded = kiss_encode(wrapped)
             written = write_kiss_frame(ser, encoded)
             trace.write("serial_write_done", Direction.TUN_TO_RADIO.value, len(pkt),
                         f"encoded_len={len(encoded)} written={written}")
@@ -276,6 +279,7 @@ def radio_to_tun(tun, ser, mtu: int, stop_event: threading.Event, debug_ip: bool
                 for port, payload in decoder.feed(data):
                     if port == KISS_DATA_PORT and payload:
                         try:
+                            payload = serial_integrity.unwrap_payload(payload)
                             trace.write("kiss_frame", Direction.RADIO_TO_TUN.value, len(payload),
                                         describe_ipv4_packet(payload))
                             log_info(f"[kiss_tun] radio -> tun0: injecting {len(payload)} bytes", quiet)
@@ -283,6 +287,9 @@ def radio_to_tun(tun, ser, mtu: int, stop_event: threading.Event, debug_ip: bool
                             os.write(tun.fileno(), payload)
                             trace.write("tun_write_done", Direction.RADIO_TO_TUN.value, len(payload),
                                         describe_ipv4_packet(payload))
+                        except ValueError as e:
+                            log_error(f"[kiss_tun] radio->tun: dropped invalid serial frame: {e}")
+                            trace.write("serial_integrity_error", Direction.RADIO_TO_TUN.value, len(payload), str(e))
                         except OSError as e:
                             if e.errno == errno.EINVAL:
                                 log_error(f"[kiss_tun] radio->tun: dropped invalid IP packet (len={len(payload)})")

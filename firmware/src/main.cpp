@@ -8,6 +8,7 @@
 #include "kiss/Kiss.h"
 #include "framing/Framing.h"
 #include "framing/Crc32.h"
+#include "kiss/SerialIntegrity.h"
 #include "display/Display.h"
 #include "stats/Stats.h"
 #include "config/ModemConfig.h"
@@ -1099,8 +1100,24 @@ static void serialRxTask(void*) {
                 if (kissFrame.command != KISS_DATA_FRAME) {
                     continue;
                 }
-                memcpy(frame.data, kissFrame.data, kissFrame.len);
-                frame.len = kissFrame.len;
+                if (modemConfig.transportMode == TransportMode::GENERIC_FRAGMENTED) {
+                    SerialIntegrityHeader hdr;
+                    if (!parseSerialIntegrityHeader(kissFrame.data, kissFrame.len, hdr) ||
+                        hdr.magic != SERIAL_INTEGRITY_MAGIC ||
+                        hdr.payload_len != kissFrame.len - SERIAL_INTEGRITY_HDR_LEN ||
+                        framing::computeCrc32(kissFrame.data + SERIAL_INTEGRITY_HDR_LEN, hdr.payload_len) != hdr.payload_crc32) {
+                        auto& sm = StatsManager::instance();
+                        sm.lock();
+                        sm.get().serialRxIntegrityDrops++;
+                        sm.unlock();
+                        continue;
+                    }
+                    memcpy(frame.data, kissFrame.data + SERIAL_INTEGRITY_HDR_LEN, hdr.payload_len);
+                    frame.len = hdr.payload_len;
+                } else {
+                    memcpy(frame.data, kissFrame.data, kissFrame.len);
+                    frame.len = kissFrame.len;
+                }
 #if DEBUG_KISS_SERIAL_RX
                 Serial.printf("[KISS RX] len=%u hex=", frame.len);
                 for (int _i = 0; _i < 8 && _i < frame.len; _i++) {
@@ -1143,7 +1160,16 @@ static void serialTxTask(void*) {
     PayloadFrame frame;
     for (;;) {
         xQueueReceive(rxQueue, &frame, portMAX_DELAY);
-        size_t encLen = Kiss::encode(frame, encBuf, sizeof(encBuf));
+        size_t encLen = 0;
+        if (modemConfig.transportMode == TransportMode::GENERIC_FRAGMENTED) {
+            uint8_t wrapperBuf[TNC_PAYLOAD_MAX_LEN + SERIAL_INTEGRITY_HDR_LEN];
+            uint32_t crc = framing::computeCrc32(frame.data, frame.len);
+            buildSerialIntegrityHeader(wrapperBuf, frame.len, crc);
+            memcpy(wrapperBuf + SERIAL_INTEGRITY_HDR_LEN, frame.data, frame.len);
+            encLen = Kiss::encodeFrame(KISS_DATA_FRAME, wrapperBuf, frame.len + SERIAL_INTEGRITY_HDR_LEN, encBuf, sizeof(encBuf));
+        } else {
+            encLen = Kiss::encode(frame, encBuf, sizeof(encBuf));
+        }
         if (encLen == 0) {
             auto& sm = StatsManager::instance();
             sm.lock();

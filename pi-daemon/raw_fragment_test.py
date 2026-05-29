@@ -14,6 +14,7 @@ import time
 import zlib
 
 import serial
+import serial_integrity
 
 from kiss_tun import (
     FIRMWARE_PAYLOAD_CAP,
@@ -102,8 +103,14 @@ def run_send(args: argparse.Namespace) -> int:
         for _ in range(args.count):
             for size in sizes:
                 payload = build_payload(seq, size)
-                frame = kiss_encode(payload)
-                written = write_kiss_frame(ser, frame)
+                wrapped = serial_integrity.wrap_payload(payload)
+                frame = kiss_encode(wrapped)
+                written = write_kiss_frame(
+                    ser,
+                    frame,
+                    chunk_size=args.write_chunk,
+                    gap_s=args.write_gap_ms / 1000.0,
+                )
                 sent += 1
                 print(
                     f"TX seq={seq} len={size} frags={fragment_count(size)} "
@@ -147,6 +154,14 @@ def run_listen(args: argparse.Namespace) -> int:
                 for port, payload in decoder.feed(data):
                     if port != KISS_DATA_PORT:
                         continue
+                    try:
+                        payload = serial_integrity.unwrap_payload(payload)
+                    except ValueError as e:
+                        bad += 1
+                        bad_reasons[f"serial_{e.__class__.__name__}"] += 1
+                        print(f"RX serial integrity drop: {e}", flush=True)
+                        continue
+                        
                     seq, size, ok, reason = parse_payload(payload)
                     total += 1
                     if ok:
@@ -209,6 +224,10 @@ def main() -> int:
                       help="Delay between sent frames")
     send.add_argument("--start-seq", type=int, default=1,
                       help="First test sequence number")
+    send.add_argument("--write-chunk", type=int, default=32,
+                      help="Serial write chunk size for encoded KISS frames")
+    send.add_argument("--write-gap-ms", type=float, default=2.0,
+                      help="Delay between serial write chunks")
 
     listen = sub.add_parser("listen", help="Receive and validate raw KISS payloads")
     listen.add_argument("--idle-timeout", type=float, default=10.0,

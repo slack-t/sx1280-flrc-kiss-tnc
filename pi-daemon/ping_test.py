@@ -24,10 +24,10 @@ from typing import Dict, List, Optional
 # Must match firmware config.h / Framing.h
 FRAG_DATA = 114   # data payload bytes per radio fragment (127-byte FLRC packet - 13-byte link header)
 IP_HDR    = 28    # IPv4 (20) + ICMP (8) fixed overhead
-
+SERIAL_HDR = 8    # Host serial integrity envelope overhead
 
 def frag_count(ping_s: int) -> int:
-    return max(1, math.ceil((ping_s + IP_HDR) / FRAG_DATA))
+    return max(1, math.ceil((ping_s + IP_HDR + SERIAL_HDR) / FRAG_DATA))
 
 
 @dataclass

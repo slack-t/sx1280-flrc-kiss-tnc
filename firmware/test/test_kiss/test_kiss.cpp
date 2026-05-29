@@ -6,6 +6,7 @@
 #include "../../src/kiss/Kiss.h"
 #include "../../src/kiss/Kiss.cpp"
 #include "../../src/framing/Crc32.h"
+#include "../../src/kiss/SerialIntegrity.h"
 
 void setUp() {}
 void tearDown() {}
@@ -490,6 +491,28 @@ void test_crc32() {
     TEST_ASSERT_EQUAL_HEX32(0x7c5597b9, framing::computeCrc32(large_payload, 1024));
 }
 
+void test_serial_integrity() {
+    uint8_t payload[] = {0xDE, 0xAD, 0xBE, 0xEF};
+    uint32_t crc = framing::computeCrc32(payload, sizeof(payload));
+    uint8_t wrapper[12];
+    buildSerialIntegrityHeader(wrapper, sizeof(payload), crc);
+    memcpy(wrapper + 8, payload, sizeof(payload));
+    
+    SerialIntegrityHeader hdr;
+    TEST_ASSERT_TRUE(parseSerialIntegrityHeader(wrapper, sizeof(wrapper), hdr));
+    TEST_ASSERT_EQUAL_HEX16(SERIAL_INTEGRITY_MAGIC, hdr.magic);
+    TEST_ASSERT_EQUAL_UINT16(sizeof(payload), hdr.payload_len);
+    TEST_ASSERT_EQUAL_HEX32(crc, hdr.payload_crc32);
+    
+    // Corrupt length
+    uint8_t bad_wrapper[12];
+    memcpy(bad_wrapper, wrapper, sizeof(wrapper));
+    bad_wrapper[3] ^= 0xFF;
+    SerialIntegrityHeader bad_hdr;
+    TEST_ASSERT_TRUE(parseSerialIntegrityHeader(bad_wrapper, sizeof(bad_wrapper), bad_hdr));
+    TEST_ASSERT_NOT_EQUAL(sizeof(payload), bad_hdr.payload_len);
+}
+
 int main(int argc, char** argv) {
     UNITY_BEGIN();
     RUN_TEST(test_roundtrip_all_bytes);
@@ -514,5 +537,6 @@ int main(int argc, char** argv) {
     RUN_TEST(test_native_packet_oversize_rejected);
     RUN_TEST(test_native_parse_rejects_data_packet);
     RUN_TEST(test_crc32);
+    RUN_TEST(test_serial_integrity);
     return UNITY_END();
 }

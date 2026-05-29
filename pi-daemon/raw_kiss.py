@@ -12,6 +12,7 @@ import sys
 import time
 
 import serial
+import serial_integrity
 
 from kiss_tun import (
     FIRMWARE_PAYLOAD_CAP,
@@ -71,6 +72,12 @@ def receive_frames(ser: serial.Serial,
             data = ser.read(waiting)
             for port, payload in decoder.feed(data):
                 if port == KISS_DATA_PORT:
+                    try:
+                        if not getattr(decoder, "no_wrap", False):
+                            payload = serial_integrity.unwrap_payload(payload)
+                    except ValueError as e:
+                        print(f"RX serial integrity drop: {e}")
+                        continue
                     print_frame("RX", payload, show_ascii)
                     received += 1
                     if deadline is not None:
@@ -102,6 +109,8 @@ def main() -> int:
                         help="UTF-8 text payload to send on KISS data port 0")
     parser.add_argument("--stdin", action="store_true",
                         help="Read the outbound payload from stdin")
+    parser.add_argument("--no-wrap", action="store_true",
+                        help="Do not wrap/unwrap payloads in the serial integrity header (for NATIVE mode)")
     args = parser.parse_args()
 
     payload = parse_payload(args)
@@ -119,9 +128,14 @@ def main() -> int:
         time.sleep(args.boot_wait)
 
     decoder = KissDecoder(FIRMWARE_PAYLOAD_CAP)
+    decoder.no_wrap = args.no_wrap
     try:
         if payload is not None:
-            frame = kiss_encode(payload)
+            if not args.no_wrap:
+                wrapped = serial_integrity.wrap_payload(payload)
+            else:
+                wrapped = payload
+            frame = kiss_encode(wrapped)
             write_kiss_frame(ser, frame)
             print_frame("TX", payload, args.ascii)
 

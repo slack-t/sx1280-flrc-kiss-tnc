@@ -329,8 +329,8 @@ def main() -> int:
         description="Run the FLRC link validation matrix. For UDP tests, run 'iperf3 -s' on the peer first."
     )
     parser.add_argument("target", help="Peer tunnel IP address, e.g. 10.0.0.2")
-    parser.add_argument("--mtu", type=int, default=246,
-                        help="Operational MTU profile used for this run (default: 246)")
+    parser.add_argument("--mtu", type=int, default=238,
+                        help="Operational MTU profile used for this run (default: 238)")
     parser.add_argument("--skip-conformance", action="store_true",
                         help="Skip local Python/Rust KISS tests")
     parser.add_argument("--skip-ping", action="store_true",

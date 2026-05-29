@@ -1,4 +1,5 @@
 mod kiss;
+mod serial_integrity;
 
 use clap::Parser;
 use std::fs::{File, OpenOptions};
@@ -31,8 +32,8 @@ struct Args {
 
     #[arg(
         long,
-        default_value_t = 246,
-        help = "Adapter MTU (must be <= firmware payload cap 1024)"
+        default_value_t = 238,
+        help = "Adapter MTU (must be <= firmware payload cap 1016)"
     )]
     mtu: u16,
 
@@ -292,7 +293,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     ),
                                 );
                                 log_packet(Direction::TunToRadio, &packet_buf[..n], debug_ip_t1);
-                                kiss::kiss_encode(&packet_buf[..n], &mut encoded_buf);
+                                
+                                let mut wrapped_buf = Vec::new();
+                                serial_integrity::wrap_payload(&packet_buf[..n], &mut wrapped_buf);
+                                kiss::kiss_encode(&wrapped_buf, &mut encoded_buf);
                                 if let Err(e) = ser_writer.write_all(&encoded_buf) {
                                     eprintln!("[kiss_tun] tun->radio serial write error: {}", e);
                                     trace_t1.write(
@@ -352,45 +356,54 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 for &byte in &read_buf[..n] {
                                     if decoder.feed(byte, &mut decoded_buf) {
                                         if !decoded_buf.is_empty() {
-                                            trace_t2.write(
-                                                "kiss_frame",
-                                                Direction::RadioToTun.label(),
-                                                decoded_buf.len(),
-                                                describe_ipv4_packet(&decoded_buf),
-                                            );
-                                            log_info(
-                                                quiet_t2,
-                                                format!(
-                                                    "[kiss_tun] radio -> {}: injecting {} bytes",
-                                                    tun_name_t2,
-                                                    decoded_buf.len()
-                                                ),
-                                            );
-                                            log_packet(
-                                                Direction::RadioToTun,
-                                                &decoded_buf,
-                                                debug_ip_t2,
-                                            );
-                                            if let Err(e) = tun_writer.send(&decoded_buf) {
-                                                eprintln!(
-                                                    "[kiss_tun] radio->tun: dropped invalid IP packet or write error: {}",
-                                                    e
-                                                );
-                                                trace_t2.write(
-                                                    "tun_write_invalid",
-                                                    Direction::RadioToTun.label(),
-                                                    decoded_buf.len(),
-                                                    e.to_string(),
-                                                );
-                                            } else {
-                                                trace_t2.write(
-                                                    "tun_write_done",
-                                                    Direction::RadioToTun.label(),
-                                                    decoded_buf.len(),
-                                                    describe_ipv4_packet(&decoded_buf),
-                                                );
+                                            match serial_integrity::unwrap_payload(&decoded_buf) {
+                                                Ok(unwrapped) => {
+                                                    trace_t2.write(
+                                                        "kiss_frame",
+                                                        Direction::RadioToTun.label(),
+                                                        unwrapped.len(),
+                                                        describe_ipv4_packet(unwrapped),
+                                                    );
+                                                    log_info(
+                                                        quiet_t2,
+                                                        format!(
+                                                            "[kiss_tun] radio -> tun0: injecting {} bytes",
+                                                            unwrapped.len()
+                                                        ),
+                                                    );
+                                                    log_packet(Direction::RadioToTun, unwrapped, debug_ip_t2);
+                                                    if let Err(e) = tun_writer.send(unwrapped) {
+                                                        eprintln!(
+                                                            "[kiss_tun] radio->tun: dropped invalid IP packet: {}",
+                                                            e
+                                                        );
+                                                        trace_t2.write(
+                                                            "tun_write_invalid",
+                                                            Direction::RadioToTun.label(),
+                                                            unwrapped.len(),
+                                                            e.to_string(),
+                                                        );
+                                                    } else {
+                                                        trace_t2.write(
+                                                            "tun_write_done",
+                                                            Direction::RadioToTun.label(),
+                                                            unwrapped.len(),
+                                                            describe_ipv4_packet(unwrapped),
+                                                        );
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    eprintln!("[kiss_tun] radio->tun: dropped invalid serial frame: {}", e);
+                                                    trace_t2.write(
+                                                        "serial_integrity_error",
+                                                        Direction::RadioToTun.label(),
+                                                        decoded_buf.len(),
+                                                        e,
+                                                    );
+                                                }
                                             }
                                         }
+                                        decoded_buf.clear();
                                     }
                                 }
                             }

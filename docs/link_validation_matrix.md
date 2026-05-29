@@ -94,16 +94,16 @@ The current radio fragment payload is `114` bytes.
 
 | Fragment count | Max IP size | Ping `-s` | UDP payload `iperf3 -l` |
 | --- | ---: | ---: | ---: |
-| 1F | 114 | 86 | 86 |
-| 2F | 228 | 200 | 200 |
-| 3F | 342 | 314 | 314 |
-| 4F | 456 | 428 | 428 |
+| 1F | 106 | 78 | 78 |
+| 2F | 220 | 192 | 192 |
+| 3F | 334 | 306 | 306 |
+| 4F | 448 | 420 | 420 |
 
 Notes:
 
 - Ping `-s` is ICMP payload. IP size is `-s + 28`.
 - UDP `iperf3 -l` is UDP payload. IP size is `-l + 28`.
-- While the link is being stabilized, production traffic should stay at `MTU 228`
+- While the link is being stabilized, production traffic should stay at `MTU 220`
   unless the `3F` and `4F` tests pass reliably.
 
 ## Phase 1: KISS Conformance

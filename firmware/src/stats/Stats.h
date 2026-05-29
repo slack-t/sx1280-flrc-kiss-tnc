@@ -40,6 +40,7 @@ struct Stats {
     uint32_t serialTxZeroWrites  = 0;
     uint32_t serialTxTimeouts    = 0;
     uint32_t serialTxEncodeFails = 0;
+    uint32_t serialRxIntegrityDrops = 0;
     uint32_t rxSpuriousIrqCount  = 0;
     uint32_t rxInvalidLengthCount = 0;
     uint32_t rxCrcErrorCount     = 0;
