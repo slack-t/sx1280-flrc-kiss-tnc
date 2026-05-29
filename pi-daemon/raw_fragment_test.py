@@ -23,6 +23,11 @@ from kiss_tun import (
     kiss_encode,
     write_kiss_frame,
 )
+from modem_tui import (
+    KISS_CONTROL_FRAME,
+    KissDecoder as ControlDecoder,
+    kiss_encode as kiss_encode_command,
+)
 from raw_kiss import open_serial
 
 
@@ -33,6 +38,24 @@ HEADER_LEN = HEADER.size
 FRAG_DATA = 114
 SERIAL_HDR_LEN = serial_integrity.SERIAL_INTEGRITY_HDR_LEN
 DEFAULT_SIZES = "105,106,107,219,220,221,333,334,335,447,448,449"
+
+
+def query_stats(ser: serial.Serial, label: str, timeout_s: float) -> None:
+    ser.reset_input_buffer()
+    decoder = ControlDecoder()
+    ser.write(kiss_encode_command(KISS_CONTROL_FRAME, b"STATS"))
+    ser.flush()
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        waiting = ser.in_waiting
+        if waiting:
+            for command, payload in decoder.feed(ser.read(waiting)):
+                if command == KISS_CONTROL_FRAME:
+                    text = payload.decode("ascii", errors="replace")
+                    print(f"{label} STATS {text}", flush=True)
+                    return
+        time.sleep(0.01)
+    print(f"{label} STATS timeout", flush=True)
 
 
 def parse_sizes(text: str) -> list[int]:
@@ -122,6 +145,8 @@ def run_send(args: argparse.Namespace) -> int:
                 if args.interval_ms > 0:
                     time.sleep(args.interval_ms / 1000.0)
     finally:
+        if args.stats:
+            query_stats(ser, "TX", args.stats_timeout)
         ser.close()
 
     print(f"TX summary frames={sent} sizes={','.join(str(s) for s in sizes)}", flush=True)
@@ -188,6 +213,8 @@ def run_listen(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        if args.stats:
+            query_stats(ser, "RX", args.stats_timeout)
         ser.close()
 
     missing = 0
@@ -229,12 +256,20 @@ def main() -> int:
                       help="Serial write chunk size for encoded KISS frames")
     send.add_argument("--write-gap-ms", type=float, default=2.0,
                       help="Delay between serial write chunks")
+    send.add_argument("--stats", action="store_true",
+                      help="Query firmware STATS on the already-open serial session before closing")
+    send.add_argument("--stats-timeout", type=float, default=1.0,
+                      help="Seconds to wait for the STATS response")
 
     listen = sub.add_parser("listen", help="Receive and validate raw KISS payloads")
     listen.add_argument("--idle-timeout", type=float, default=10.0,
                         help="Stop after this many idle seconds")
     listen.add_argument("--expected", type=int, default=0,
                         help="Stop after receiving this many frames")
+    listen.add_argument("--stats", action="store_true",
+                        help="Query firmware STATS on the already-open serial session before closing")
+    listen.add_argument("--stats-timeout", type=float, default=1.0,
+                        help="Seconds to wait for the STATS response")
 
     args = parser.parse_args()
     if args.command == "send":

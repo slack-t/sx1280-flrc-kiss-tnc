@@ -50,6 +50,7 @@ static QueueHandle_t controlQueue;  // ControlFrame: RadioRX  → RadioTX
 // written by radioRxTask. Both tasks live on Core 1 so volatile 32-bit
 // aligned writes are sufficient.
 static volatile uint32_t g_last_link_activity_ms        = 0;
+static volatile uint32_t g_last_payload_activity_ms     = 0;
 static volatile uint32_t g_last_bidirectional_ctrl_ms   = 0;
 static volatile bool     g_link_ever_confirmed          = false;
 static uint16_t          g_control_seq                  = 0;  // only incremented by radioTxTask
@@ -85,8 +86,19 @@ static inline bool isLinkIdle() {
     return (millis() - g_last_link_activity_ms) >= RADIO_LINK_IDLE_MS;
 }
 
+static inline bool isPayloadIdle() {
+    if (g_last_payload_activity_ms == 0) return true;
+    return (millis() - g_last_payload_activity_ms) >= RADIO_LINK_IDLE_MS;
+}
+
 static void noteLinkActivity() {
     g_last_link_activity_ms = millis();
+}
+
+static void notePayloadActivity() {
+    const uint32_t now = millis();
+    g_last_payload_activity_ms = now;
+    g_last_link_activity_ms = now;
 }
 
 static void noteControlMalformed() {
@@ -133,6 +145,7 @@ struct CompletedFrameCache {
     uint8_t  total_frags = 0;
     uint16_t frame_len   = 0;
     uint32_t frame_crc32 = 0;
+    bool     warmup      = false;
     uint32_t ack_mask    = 0;
     uint32_t tick_ms     = 0;
 };
@@ -383,7 +396,8 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
                  "OK rx=%lu rxBytes=%lu arqDone=%lu arqMetaDrop=%lu arqIntDrop=%lu arqCrc=%lu "
                  "stxZero=%lu stxTimeout=%lu stxEncodeFail=%lu rxQWait=%lu "
                  "linkReady=%u linkState=%s linkAgeMs=%lu "
-                 "hbTx=%lu hbAckRx=%lu dpTx=%lu drRx=%lu primerTO=%lu cqDrop=%lu",
+                 "hbTx=%lu hbAckRx=%lu dpTx=%lu drRx=%lu primerTO=%lu cqDrop=%lu "
+                 "wuTx=%lu wuRx=%lu wuAck=%lu wuTO=%lu",
                  snapshot.rxCount,
                  snapshot.rxBytes,
                  snapshot.arqFramesCompleted,
@@ -402,7 +416,11 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
                  snapshot.controlDataPendingTx,
                  snapshot.controlDataReadyRx,
                  snapshot.controlPrimerTimeouts,
-                 snapshot.controlQueueDrops);
+                 snapshot.controlQueueDrops,
+                 snapshot.arqWarmupTx,
+                 snapshot.arqWarmupRx,
+                 snapshot.arqWarmupAckRx,
+                 snapshot.arqWarmupTimeouts);
         sendControlResponse(response);
         return;
     }
@@ -612,6 +630,24 @@ static void finalizeReassembly(Reassembler& ra, CompletedFrameCache& completed) 
     }
     frame.rssi = ra.last_rssi;
 
+    completed.seq         = ra.seq;
+    completed.total_frags = ra.total_frags;
+    completed.frame_len   = ra.frame_len;
+    completed.frame_crc32 = ra.frame_crc32;
+    completed.warmup      = ra.warmup;
+    completed.ack_mask    = ra.received_mask;
+    completed.tick_ms     = millis();
+
+    if (ra.warmup) {
+        auto& sm = StatsManager::instance();
+        sm.lock();
+        sm.get().arqWarmupRx++;
+        sm.unlock();
+        ARQ_LOG("[ARQ RX:WARMUP seq=%04x]\n", ra.seq);
+        ra.reset();
+        return;
+    }
+
     auto& sm = StatsManager::instance();
     sm.lock();
     sm.get().rxCount++;
@@ -636,12 +672,6 @@ static void finalizeReassembly(Reassembler& ra, CompletedFrameCache& completed) 
     }
     ARQ_LOG("[ARQ RX:DONE seq=%04x tot=%u mask=%08lx len=%u]\n",
             ra.seq, ra.total_frags, static_cast<unsigned long>(ra.received_mask), frame.len);
-    completed.seq         = ra.seq;
-    completed.total_frags = ra.total_frags;
-    completed.frame_len   = ra.frame_len;
-    completed.frame_crc32 = ra.frame_crc32;
-    completed.ack_mask    = ra.received_mask;
-    completed.tick_ms     = millis();
     ra.reset();
 }
 
@@ -676,6 +706,7 @@ static void sendAckForReassembly(Reassembler& ra) {
         return;
     }
 
+    notePayloadActivity();
     ra.ack_pending = false;
 }
 
@@ -732,6 +763,7 @@ static void radioRxTask(void*) {
                         completed.total_frags = ra.total_frags;
                         completed.frame_len   = ra.frame_len;
                         completed.frame_crc32 = ra.frame_crc32;
+                        completed.warmup      = ra.warmup;
                         completed.ack_mask    = 0;  // Explicit fatal NACK for this completed sequence.
                         completed.tick_ms     = millis();
                         ra.reset();
@@ -761,6 +793,7 @@ static void radioRxTask(void*) {
                     completed.total_frags = ra.total_frags;
                     completed.frame_len   = ra.frame_len;
                     completed.frame_crc32 = ra.frame_crc32;
+                    completed.warmup      = ra.warmup;
                     completed.ack_mask    = 0;
                     completed.tick_ms     = millis();
                     ra.reset();
@@ -874,7 +907,7 @@ static void radioRxTask(void*) {
                 noteRadioRxError();
                 continue;
             }
-            noteLinkActivity();
+            notePayloadActivity();
             auto& sm = StatsManager::instance();
             sm.lock();
             sm.get().arqAckRxCount++;
@@ -888,7 +921,7 @@ static void radioRxTask(void*) {
 
         // ── Native single-packet RX path ─────────────────────────────────────
         if (framingPacketType(pkt) == LinkPacketType::NATIVE) {
-            noteLinkActivity();
+            notePayloadActivity();
             uint8_t payload_len = 0;
             if (!framingParseNativePayload(pkt, payload_len)) {
                 noteMalformedData();
@@ -950,12 +983,14 @@ static void radioRxTask(void*) {
         const uint16_t frame_len    = dataHdr.frame_len;
         const uint32_t frame_crc32  = dataHdr.frame_crc32;
         const bool    round_end     = dataHdr.round_end;
+        const bool    warmup        = dataHdr.warmup;
         const uint32_t now_ms       = millis();
 
         if (completed.seq == seq && (now_ms - completed.tick_ms) <= RADIO_DUP_CACHE_MS) {
             if (completed.total_frags == total_frags &&
                 completed.frame_len == frame_len &&
-                completed.frame_crc32 == frame_crc32) {
+                completed.frame_crc32 == frame_crc32 &&
+                completed.warmup == warmup) {
                 ARQ_LOG("[ARQ RX:DUP seq=%04x tot=%u mask=%08lx]\n",
                         seq, total_frags, static_cast<unsigned long>(completed.ack_mask));
                 // Re-ACK without re-delivering. Use AckFrame + Packet directly to
@@ -977,6 +1012,8 @@ static void radioRxTask(void*) {
                     sm.get().arqAckTxErrors++;
                     sm.unlock();
                     noteRadioTxError();
+                } else {
+                    notePayloadActivity();
                 }
             } else {
                 auto& sm = StatsManager::instance();
@@ -1005,7 +1042,11 @@ static void radioRxTask(void*) {
             ra.total_frags = total_frags;
             ra.frame_len   = frame_len;
             ra.frame_crc32 = frame_crc32;
-        } else if (ra.total_frags != total_frags || ra.frame_len != frame_len || ra.frame_crc32 != frame_crc32) {
+            ra.warmup      = warmup;
+        } else if (ra.total_frags != total_frags ||
+                   ra.frame_len != frame_len ||
+                   ra.frame_crc32 != frame_crc32 ||
+                   ra.warmup != warmup) {
             auto& sm = StatsManager::instance();
             sm.lock();
             sm.get().arqFragmentMetadataDrops++;
@@ -1017,7 +1058,7 @@ static void radioRxTask(void*) {
         const bool    is_new_frag  = !(ra.received_mask & bit);
 
         if (is_new_frag) {
-            noteLinkActivity();
+            notePayloadActivity();
             memcpy(ra.buf + idx * FRAMING_FRAG_DATA, pkt.data + FRAMING_DATA_HDR_LEN, frag_data_len);
             ra.frag_len[idx]  = frag_data_len;
             ra.received_mask |= bit;
@@ -1135,7 +1176,7 @@ static void radioTxTask(void*) {
                     sm.get().nativeTxCount++;
                     sm.get().txCount++;
                     sm.get().txBytes += frame.len;
-                    noteLinkActivity();
+                    notePayloadActivity();
                 } else {
                     sm.get().errorCount++;
                     sm.get().radioTxErrors++;
@@ -1149,73 +1190,89 @@ static void radioTxTask(void*) {
         // ── Generic fragmented ARQ path ───────────────────────────────────────
         xQueueReset(ackQueue);
         xQueueReset(controlQueue);
+        const uint8_t total_frags = framingExpectedTotalFrags(frame.len);
+        const uint32_t frame_crc32 = framing::computeCrc32(frame.data, frame.len);
+        auto& sm = StatsManager::instance();
+
+        // Warm up idle multi-fragment bursts with a real one-fragment ARQ DATA
+        // exchange. CONTROL handshakes do not exercise the same receiver
+        // reassembly + ARQ ACK path as the manual 105-byte primer.
+        if (total_frags > 1 && isPayloadIdle()) {
+            seq++;
+            if (seq == FRAMING_SEQ_UNSET) {
+                seq++;
+            }
+
+            static constexpr uint8_t warmup_payload[1] = {0};
+            const uint32_t warmup_crc32 = framing::computeCrc32(warmup_payload, sizeof(warmup_payload));
+            Packet warmupPkt;
+            framingBuildDataPacket(warmupPkt, seq, 0, 1, true,
+                                   warmup_payload, sizeof(warmup_payload),
+                                   sizeof(warmup_payload), warmup_crc32, true);
+
+            sm.lock();
+            sm.get().radioState = RadioState::TX;
+            sm.unlock();
+
+            const int16_t warmupErr = radio.transmit(warmupPkt, true);
+
+            sm.lock();
+            sm.get().radioState = RadioState::IDLE;
+            if (warmupErr == RADIOLIB_ERR_NONE) {
+                sm.get().arqWarmupTx++;
+                notePayloadActivity();
+            } else {
+                sm.get().errorCount++;
+                sm.get().radioTxErrors++;
+            }
+            sm.unlock();
+
+            if (warmupErr == RADIOLIB_ERR_NONE) {
+                AckFrame warmupAck;
+                bool got_warmup_ack = false;
+                const uint32_t warmup_deadline = millis() + ackTimeoutMs(1);
+                while (millis() < warmup_deadline) {
+                    const uint32_t now = millis();
+                    if (now >= warmup_deadline) {
+                        break;
+                    }
+                    if (xQueueReceive(ackQueue, &warmupAck, pdMS_TO_TICKS(warmup_deadline - now)) != pdPASS) {
+                        break;
+                    }
+                    if (warmupAck.seq == seq &&
+                        warmupAck.total_frags == 1 &&
+                        warmupAck.window_base == 0 &&
+                        (warmupAck.received_mask & 0x01u) != 0) {
+                        got_warmup_ack = true;
+                        sm.lock();
+                        sm.get().arqWarmupAckRx++;
+                        sm.unlock();
+                        notePayloadActivity();
+                        break;
+                    }
+                }
+                if (!got_warmup_ack) {
+                    sm.lock();
+                    sm.get().arqWarmupTimeouts++;
+                    sm.unlock();
+                }
+            }
+            xQueueReset(ackQueue);
+        }
+
         seq++;
         if (seq == FRAMING_SEQ_UNSET) {
             seq++;
         }
-        const uint8_t total_frags = framingExpectedTotalFrags(frame.len);
-        const uint32_t frame_crc32 = framing::computeCrc32(frame.data, frame.len);
         uint32_t pending_mask = framingExpectedMask(total_frags);
         bool delivered = false;
 
-        auto& sm = StatsManager::instance();
         sm.lock();
         sm.get().arqFramesStarted++;
         sm.unlock();
 
         ARQ_LOG("[ARQ TX:START seq=%04x tot=%u len=%u]\n",
                 seq, total_frags, frame.len);
-
-        // DATA_PENDING/DATA_READY primer before multi-fragment bursts after idle.
-        // Single-fragment frames skip this because they act as natural primers.
-        if (total_frags > 1 && !isLinkReady()) {
-            g_control_seq++;
-            const uint16_t cseq = g_control_seq;
-            ControlFrame ctrl;
-            ctrl.type          = ControlType::DATA_PENDING;
-            ctrl.seq           = cseq;
-            ctrl.pending_frags = total_frags;
-            Packet ctrlPkt;
-            framingBuildControlPacket(ctrlPkt, ctrl);
-            {
-                auto& sm2 = StatsManager::instance();
-                sm2.lock();
-                sm2.get().controlDataPendingTx++;
-                sm2.unlock();
-            }
-            bool primed = false;
-            for (int retry = 0; retry <= RADIO_CONTROL_MAX_RETRIES && !primed; retry++) {
-                if (radio.transmit(ctrlPkt, true) != RADIOLIB_ERR_NONE) {
-                    noteRadioTxError();
-                    break;
-                }
-                noteLinkActivity();
-                ControlFrame resp;
-                const uint32_t dp_deadline = millis() + RADIO_CONTROL_ACK_TIMEOUT_MS;
-                while (millis() < dp_deadline) {
-                    const uint32_t rem = dp_deadline - millis();
-                    if (xQueueReceive(controlQueue, &resp, pdMS_TO_TICKS(rem)) == pdPASS) {
-                        if (resp.type == ControlType::DATA_READY && resp.seq == cseq) {
-                            auto& sm2 = StatsManager::instance();
-                            sm2.lock();
-                            sm2.get().controlDataReadyRx++;
-                            sm2.unlock();
-                            noteBidirectionalControl();
-                            updateLinkStats();
-                            primed = true;
-                            break;
-                        }
-                    }
-                }
-                if (!primed) {
-                    auto& sm2 = StatsManager::instance();
-                    sm2.lock();
-                    sm2.get().controlPrimerTimeouts++;
-                    sm2.unlock();
-                }
-            }
-            // Start DATA regardless of primer outcome per plan recommendation.
-        }
 
         for (uint8_t round = 0; round < RADIO_ARQ_MAX_ROUNDS && pending_mask != 0; round++) {
             ARQ_LOG("[ARQ TX:ROUND seq=%04x tot=%u round=%u pending=%08lx]\n",
@@ -1262,7 +1319,7 @@ static void radioTxTask(void*) {
                 sm.unlock();
 
                 if (err == RADIOLIB_ERR_NONE) {
-                    noteLinkActivity();
+                    notePayloadActivity();
                     sent_mask |= bit;
                 }
             }

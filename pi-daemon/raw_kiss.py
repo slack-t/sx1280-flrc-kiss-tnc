@@ -13,6 +13,10 @@ import time
 
 import serial
 import serial_integrity
+try:
+    import termios
+except ImportError:  # pragma: no cover - non-POSIX hosts
+    termios = None
 
 from kiss_tun import (
     FIRMWARE_PAYLOAD_CAP,
@@ -38,6 +42,12 @@ def open_serial(port: str, baud: int, timeout: float) -> serial.Serial:
     ser.dtr = False
     ser.rts = False
     ser.open()
+    ser.dtr = False
+    ser.rts = False
+    if termios is not None and hasattr(ser, "fileno"):
+        attrs = termios.tcgetattr(ser.fileno())
+        attrs[2] &= ~termios.HUPCL
+        termios.tcsetattr(ser.fileno(), termios.TCSANOW, attrs)
     ser.reset_input_buffer()
     ser.reset_output_buffer()
     return ser

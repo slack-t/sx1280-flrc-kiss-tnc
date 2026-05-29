@@ -44,7 +44,7 @@ struct ControlFrame {
 // ── Link header ────────────────────────────────────────────────────────────────
 // DATA packet:
 //   byte 0  [7:4]=version, [3:0]=type
-//   byte 1  flags (bit 0 = round-end)
+//   byte 1  flags (bit 0 = round-end, bit 1 = warmup/no-deliver)
 //   byte 2  frame sequence high byte
 //   byte 3  frame sequence low byte
 //   byte 4  fragment index
@@ -67,6 +67,7 @@ static constexpr uint8_t  FRAMING_VERSION         = 2;
 static constexpr uint8_t  FRAMING_VERSION_SHIFT   = 4;
 static constexpr uint8_t  FRAMING_TYPE_MASK       = 0x0Fu;
 static constexpr uint8_t  FRAMING_FLAG_ROUND_END  = 0x01u;
+static constexpr uint8_t  FRAMING_FLAG_WARMUP     = 0x02u;
 static constexpr uint8_t  FRAMING_DATA_HDR_LEN    = 13;
 static constexpr uint8_t  FRAMING_ACK_HDR_LEN     = 11;
 static constexpr uint8_t  FRAMING_ACK_MASK_BYTES  = 4;
@@ -113,6 +114,7 @@ struct DataFrameHeader {
     uint16_t frame_len   = 0;
     uint32_t frame_crc32 = 0;
     bool     round_end   = false;
+    bool     warmup      = false;
 };
 
 inline uint32_t framingExpectedMask(uint8_t total_frags) {
@@ -169,6 +171,7 @@ inline bool framingParseDataHeader(const Packet& pkt, DataFrameHeader& header) {
                          (static_cast<uint32_t>(pkt.data[11]) << 8) |
                           static_cast<uint32_t>(pkt.data[12]);
     header.round_end   = (pkt.data[1] & FRAMING_FLAG_ROUND_END) != 0;
+    header.warmup      = (pkt.data[1] & FRAMING_FLAG_WARMUP) != 0;
 
     if (header.total_frags == 0 || header.total_frags > FRAMING_MAX_FRAGS) {
         return false;
@@ -236,9 +239,11 @@ inline void framingBuildDataPacket(Packet& pkt,
                                    const uint8_t* payload,
                                    uint8_t payload_len,
                                    uint16_t frame_len,
-                                   uint32_t frame_crc32) {
+                                   uint32_t frame_crc32,
+                                   bool warmup = false) {
     pkt.data[0] = framingEncodeVersionType(LinkPacketType::DATA);
-    pkt.data[1] = round_end ? FRAMING_FLAG_ROUND_END : 0;
+    pkt.data[1] = (round_end ? FRAMING_FLAG_ROUND_END : 0) |
+                  (warmup ? FRAMING_FLAG_WARMUP : 0);
     pkt.data[2] = static_cast<uint8_t>(seq >> 8);
     pkt.data[3] = static_cast<uint8_t>(seq & 0xFFu);
     pkt.data[4] = idx;
@@ -372,6 +377,7 @@ struct Reassembler {
     uint8_t  total_frags   = 0;
     uint16_t frame_len     = 0;
     uint32_t frame_crc32   = 0;
+    bool     warmup        = false;
     bool     ack_pending   = false;
     int8_t   last_rssi     = 0;
     uint32_t last_tick_ms  = 0;
@@ -383,6 +389,7 @@ struct Reassembler {
         total_frags   = 0;
         frame_len     = 0;
         frame_crc32   = 0;
+        warmup        = false;
         ack_pending   = false;
         last_rssi     = 0;
         last_tick_ms  = 0;

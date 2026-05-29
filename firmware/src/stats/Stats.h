@@ -87,6 +87,10 @@ struct Stats {
     uint32_t controlPrimerTimeouts = 0;
     uint32_t controlMalformedDrops = 0;
     uint32_t controlQueueDrops     = 0;
+    uint32_t arqWarmupTx           = 0;
+    uint32_t arqWarmupRx           = 0;
+    uint32_t arqWarmupAckRx        = 0;
+    uint32_t arqWarmupTimeouts     = 0;
     uint32_t linkReadyTransitions  = 0;
     uint32_t linkDownTransitions   = 0;
     uint8_t  linkReady  = 0;

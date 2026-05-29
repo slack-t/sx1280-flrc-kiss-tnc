@@ -160,10 +160,29 @@ void test_link_data_packet_roundtrip() {
     TEST_ASSERT_EQUAL_UINT8(2, decoded.frag_index);
     TEST_ASSERT_EQUAL_UINT8(9, decoded.total_frags);
     TEST_ASSERT_TRUE(decoded.round_end);
+    TEST_ASSERT_FALSE(decoded.warmup);
     TEST_ASSERT_EQUAL_UINT8(114, decoded.payload_len);
     TEST_ASSERT_EQUAL_UINT16(943, decoded.frame_len);
     TEST_ASSERT_EQUAL_HEX32(0xCAFEBABEu, decoded.frame_crc32);
     TEST_ASSERT_EQUAL_MEMORY(payload, pkt.data + FRAMING_DATA_HDR_LEN, 114);
+}
+
+void test_link_data_warmup_flag_roundtrip() {
+    Packet pkt;
+    const uint8_t payload[1] = {0x42};
+    framingBuildDataPacket(pkt, 0x2222, 0, 1, true, payload, sizeof(payload),
+                           sizeof(payload), 0x12345678u, true);
+
+    DataFrameHeader decoded;
+    TEST_ASSERT_TRUE(framingParseDataHeader(pkt, decoded));
+    TEST_ASSERT_TRUE(decoded.round_end);
+    TEST_ASSERT_TRUE(decoded.warmup);
+    TEST_ASSERT_EQUAL_UINT16(0x2222, decoded.seq);
+    TEST_ASSERT_EQUAL_UINT8(1, decoded.total_frags);
+    TEST_ASSERT_EQUAL_UINT8(1, decoded.payload_len);
+    TEST_ASSERT_EQUAL_UINT16(1, decoded.frame_len);
+    TEST_ASSERT_EQUAL_HEX32(0x12345678u, decoded.frame_crc32);
+    TEST_ASSERT_EQUAL_HEX8(0x42, pkt.data[FRAMING_DATA_HDR_LEN]);
 }
 
 void test_framing_validation() {
@@ -668,6 +687,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_non_zero_port_dropped);
     RUN_TEST(test_empty_frame_ignored);
     RUN_TEST(test_link_data_packet_roundtrip);
+    RUN_TEST(test_link_data_warmup_flag_roundtrip);
     RUN_TEST(test_framing_validation);
     RUN_TEST(test_link_ack_packet_roundtrip);
     RUN_TEST(test_back_to_back_double_fend);

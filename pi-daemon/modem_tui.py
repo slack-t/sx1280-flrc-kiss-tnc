@@ -10,6 +10,10 @@ import argparse
 import curses
 import time
 import serial
+try:
+    import termios
+except ImportError:  # pragma: no cover - non-POSIX hosts
+    termios = None
 
 FEND = 0xC0
 FESC = 0xDB
@@ -94,6 +98,12 @@ class ModemClient:
         self.ser.dtr = False
         self.ser.rts = False
         self.ser.open()
+        self.ser.dtr = False
+        self.ser.rts = False
+        if termios is not None and hasattr(self.ser, "fileno"):
+            attrs = termios.tcgetattr(self.ser.fileno())
+            attrs[2] &= ~termios.HUPCL
+            termios.tcsetattr(self.ser.fileno(), termios.TCSANOW, attrs)
         if boot_wait > 0:
             time.sleep(boot_wait)
         self.ser.reset_input_buffer()
