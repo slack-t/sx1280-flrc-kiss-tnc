@@ -63,24 +63,11 @@ void Display::_drawChrome() {
 void Display::update(const Stats& s) {
     if (!_initialised) return;
 
-    // Clear offscreen buffer
     _sprite.fillSprite(TFT_BLACK);
 
-    // 1. Determine header flash state (blinks on TX/RX packets)
-    uint32_t now = millis();
-    bool flashActive = (now < _flashTxUntilMs || now < _flashRxUntilMs);
-
-    // 2. Draw Header Bar
-    if (flashActive) {
-        // Flash state: Black bar with white text
-        _sprite.fillRect(0, 0, OLED_WIDTH, 11, TFT_BLACK);
-        _sprite.setTextColor(TFT_WHITE, TFT_BLACK);
-    } else {
-        // Normal state: White bar with black text
-        _sprite.fillRect(0, 0, OLED_WIDTH, 11, TFT_WHITE);
-        _sprite.setTextColor(TFT_BLACK, TFT_WHITE);
-    }
-
+    // Header bar: title + transport mode
+    _sprite.fillRect(0, 0, OLED_WIDTH, 11, TFT_WHITE);
+    _sprite.setTextColor(TFT_BLACK, TFT_WHITE);
     _sprite.setCursor(2, 2);
     {
         char titleBuf[20];
@@ -89,220 +76,45 @@ void Display::update(const Stats& s) {
         _sprite.print(titleBuf);
     }
 
-    // Print State in Header (right-aligned)
-    const char* stateStr = "IDLE";
-    switch (s.radioState) {
-        case RadioState::TX:    stateStr = "TX"; break;
-        case RadioState::RX:    stateStr = "RX"; break;
-        case RadioState::ERROR: stateStr = "ERR"; break;
-        default:                stateStr = "IDLE"; break;
-    }
-
-    // Alignment logic for 6x8 font (each char is 6px wide)
-    int stateX = 102; // Default for "IDLE" (4 chars = 24px, 128 - 24 - 2)
-    if (s.radioState == RadioState::TX || s.radioState == RadioState::RX) {
-        stateX = 114; // "TX"/"RX" (2 chars = 12px, 128 - 12 - 2)
-    } else if (s.radioState == RadioState::ERROR) {
-        stateX = 108; // "ERR" (3 chars = 18px, 128 - 18 - 2)
-    }
-
-    _sprite.setCursor(stateX, 2);
-    _sprite.print(stateStr);
-
-    // 3. Draw Layout Separators (White on black)
+    // Dividers
     _sprite.drawFastHLine(0, 12, OLED_WIDTH, TFT_WHITE);
     _sprite.drawFastVLine(64, 12, OLED_HEIGHT - 12, TFT_WHITE);
 
-    // 4. Draw Body Text
     _sprite.setTextColor(TFT_WHITE, TFT_BLACK);
     char buf[32];
 
-    const uint8_t page = static_cast<uint8_t>((now / 3000) % 5);
-
-    if (page == 1) {
-        snprintf(buf, sizeof(buf), "AT:%lu", s.arqAckTimeoutCount);
-        _sprite.setCursor(2, 15);
-        _sprite.print(buf);
-
-        snprintf(buf, sizeof(buf), "RE:%lu", s.radioRxErrors);
-        _sprite.setCursor(68, 15);
-        _sprite.print(buf);
-
-        snprintf(buf, sizeof(buf), "RT:%lu", s.arqRetryCount);
-        _sprite.setCursor(2, 27);
-        _sprite.print(buf);
-
-        snprintf(buf, sizeof(buf), "TE:%lu", s.radioTxErrors);
-        _sprite.setCursor(68, 27);
-        _sprite.print(buf);
-
-        snprintf(buf, sizeof(buf), "TQ:%lu", s.txQueueWaitCount);
-        _sprite.setCursor(2, 39);
-        _sprite.print(buf);
-
-        snprintf(buf, sizeof(buf), "RQ:%lu", s.rxQueueWaitCount);
-        _sprite.setCursor(68, 39);
-        _sprite.print(buf);
-
-        snprintf(buf, sizeof(buf), "ZW:%lu", s.serialTxZeroWrites);
-        _sprite.setCursor(2, 51);
-        _sprite.print(buf);
-
-        snprintf(buf, sizeof(buf), "ST:%lu", s.serialTxTimeouts);
-        _sprite.setCursor(68, 51);
-        _sprite.print(buf);
-
-        _sprite.pushSprite(&_lcd, 0, 0);
-        return;
-    }
-
-    if (page == 2) {
-        snprintf(buf, sizeof(buf), "SP:%lu", s.rxSpuriousIrqCount);
-        _sprite.setCursor(2, 15);
-        _sprite.print(buf);
-
-        snprintf(buf, sizeof(buf), "SW:%lu", s.rxSyncWordErrorCount);
-        _sprite.setCursor(68, 15);
-        _sprite.print(buf);
-
-        snprintf(buf, sizeof(buf), "CE:%lu", s.rxCrcErrorCount);
-        _sprite.setCursor(2, 27);
-        _sprite.print(buf);
-
-        snprintf(buf, sizeof(buf), "HE:%lu", s.rxHeaderErrorCount);
-        _sprite.setCursor(68, 27);
-        _sprite.print(buf);
-
-        snprintf(buf, sizeof(buf), "TO:%lu", s.rxTimeoutCount);
-        _sprite.setCursor(2, 39);
-        _sprite.print(buf);
-
-        snprintf(buf, sizeof(buf), "LE:%d", s.lastRadioErr);
-        _sprite.setCursor(68, 39);
-        _sprite.print(buf);
-
-        snprintf(buf, sizeof(buf), "IR:%04x", s.lastIrqStatus);
-        _sprite.setCursor(2, 51);
-        _sprite.print(buf);
-
-        snprintf(buf, sizeof(buf), "LN:%u", s.lastPacketLength);
-        _sprite.setCursor(68, 51);
-        _sprite.print(buf);
-
-        _sprite.pushSprite(&_lcd, 0, 0);
-        return;
-    }
-
-    if (page == 3) {
-        const char* source = "DEF";
-        if (s.configSource == static_cast<uint8_t>(ModemConfigSource::NVS)) {
-            source = "NVS";
-        } else if (s.configSource == static_cast<uint8_t>(ModemConfigSource::RESET_HELD)) {
-            source = "RST";
-        }
-
-        snprintf(buf, sizeof(buf), "CR:%u P:%d", s.codingRate, s.txPowerDbm);
-        _sprite.setCursor(2, 15);
-        _sprite.print(buf);
-
-        snprintf(buf, sizeof(buf), "PR:%u BT:%u", s.preambleBits, s.btShaping);
-        _sprite.setCursor(2, 27);
-        _sprite.print(buf);
-
-        snprintf(buf, sizeof(buf), "SW:%08lx", static_cast<unsigned long>(s.syncWord));
-        _sprite.setCursor(2, 39);
-        _sprite.print(buf);
-
-        snprintf(buf, sizeof(buf), "V:%u %s C:%04x", s.configVersion, source, s.configCrc16);
-        _sprite.setCursor(2, 51);
-        _sprite.print(buf);
-
-        _sprite.pushSprite(&_lcd, 0, 0);
-        return;
-    }
-
-    if (page == 4) {
-        snprintf(buf, sizeof(buf), "IL:%lu", s.rxInvalidLengthCount);
-        _sprite.setCursor(2, 15);
-        _sprite.print(buf);
-
-        snprintf(buf, sizeof(buf), "RD:%lu", s.rxReadDataErrorCount);
-        _sprite.setCursor(68, 15);
-        _sprite.print(buf);
-
-        snprintf(buf, sizeof(buf), "MA:%lu", s.rxMalformedAckCount);
-        _sprite.setCursor(2, 27);
-        _sprite.print(buf);
-
-        snprintf(buf, sizeof(buf), "MD:%lu", s.rxMalformedDataCount);
-        _sprite.setCursor(68, 27);
-        _sprite.print(buf);
-
-        snprintf(buf, sizeof(buf), "KE:%lu", s.kissMalformedFrameCount);
-        _sprite.setCursor(2, 39);
-        _sprite.print(buf);
-
-        snprintf(buf, sizeof(buf), "KO:%lu", s.kissOversizeDropCount);
-        _sprite.setCursor(68, 39);
-        _sprite.print(buf);
-
-        snprintf(buf, sizeof(buf), "NO:%lu", s.nativeOversizeDropCount);
-        _sprite.setCursor(2, 51);
-        _sprite.print(buf);
-
-        snprintf(buf, sizeof(buf), "ER:%lu", s.errorCount);
-        _sprite.setCursor(68, 51);
-        _sprite.print(buf);
-
-        _sprite.pushSprite(&_lcd, 0, 0);
-        return;
-    }
-
-    // --- Row 1 (Y = 15) ---
+    // Row 1: frequency | bitrate
     snprintf(buf, sizeof(buf), "F:%.1f", s.freqMHz);
     _sprite.setCursor(2, 15);
     _sprite.print(buf);
 
-    snprintf(buf, sizeof(buf), "TX:%lu", s.txCount);
+    snprintf(buf, sizeof(buf), "R:%luK", s.bitrateKbps);
     _sprite.setCursor(68, 15);
     _sprite.print(buf);
 
-    // --- Row 2 (Y = 27) ---
-    snprintf(buf, sizeof(buf), "R:%luK", s.bitrateKbps);
+    // Row 2: coding rate + power | preamble + BT shaping
+    snprintf(buf, sizeof(buf), "CR:%u P:%d", s.codingRate, s.txPowerDbm);
     _sprite.setCursor(2, 27);
     _sprite.print(buf);
 
-    snprintf(buf, sizeof(buf), "RX:%lu", s.rxCount);
+    snprintf(buf, sizeof(buf), "PR:%u BT:%u", s.preambleBits, s.btShaping);
     _sprite.setCursor(68, 27);
     _sprite.print(buf);
 
-    // --- Row 3 (Y = 39) ---
-    snprintf(buf, sizeof(buf), "RSSI:%d", s.rssi);
+    // Row 3: sync word (spans full width)
+    snprintf(buf, sizeof(buf), "SW:%08lx", static_cast<unsigned long>(s.syncWord));
     _sprite.setCursor(2, 39);
     _sprite.print(buf);
 
-    snprintf(buf, sizeof(buf), "ER:%lu", s.errorCount);
-    _sprite.setCursor(68, 39);
+    // Row 4: LBT threshold
+    if (s.lbtRssiThresholdDbm == 0) {
+        snprintf(buf, sizeof(buf), "LBT:OFF");
+    } else {
+        snprintf(buf, sizeof(buf), "LBT:%d", s.lbtRssiThresholdDbm);
+    }
+    _sprite.setCursor(2, 51);
     _sprite.print(buf);
 
-    // --- Row 4 (Y = 51): mode-dependent counters ---
-    if (s.transportMode == static_cast<uint8_t>(TransportMode::NATIVE_PACKET)) {
-        snprintf(buf, sizeof(buf), "NTX:%lu", s.nativeTxCount);
-        _sprite.setCursor(2, 51);
-        _sprite.print(buf);
-        snprintf(buf, sizeof(buf), "NOV:%lu", s.nativeOversizeDropCount);
-        _sprite.setCursor(68, 51);
-        _sprite.print(buf);
-    } else {
-        snprintf(buf, sizeof(buf), "RTY:%lu", s.arqRetryCount);
-        _sprite.setCursor(2, 51);
-        _sprite.print(buf);
-        snprintf(buf, sizeof(buf), "ATO:%lu", s.arqAckTimeoutCount);
-        _sprite.setCursor(68, 51);
-        _sprite.print(buf);
-    }
-
-    // 5. Push double-buffered frame to display
     _sprite.pushSprite(&_lcd, 0, 0);
 }
 

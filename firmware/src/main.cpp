@@ -59,6 +59,7 @@ static void refreshModemStats() {
         (static_cast<uint32_t>(modemConfig.syncWord[1]) << 16) |
         (static_cast<uint32_t>(modemConfig.syncWord[2]) << 8) |
         static_cast<uint32_t>(modemConfig.syncWord[3]);
+    sm.get().lbtRssiThresholdDbm = modemConfig.lbtRssiThresholdDbm;
     sm.get().configCrc16 = modemConfigChecksum(modemConfig);
     sm.get().configVersion = MODEM_CONFIG_PROTOCOL_VERSION;
     sm.get().configSource = static_cast<uint8_t>(modemConfigSource);
@@ -900,6 +901,7 @@ static void radioRxTask(void*) {
 static void radioTxTask(void*) {
     PayloadFrame frame;
     static uint16_t seq = 0;
+    static uint32_t last_arq_tx_ms = 0;
 
     for (;;) {
         xQueueReceive(txQueue, &frame, portMAX_DELAY);
@@ -971,6 +973,33 @@ static void radioTxTask(void*) {
         ARQ_LOG("[ARQ TX:START seq=%04x tot=%u len=%u]\n",
                 seq, total_frags, frame.len);
 
+        const uint32_t arq_start_ms = millis();
+        if (total_frags > 1 &&
+            (last_arq_tx_ms == 0 || (arq_start_ms - last_arq_tx_ms) >= RADIO_ARQ_IDLE_PRIMER_MS)) {
+            Packet primerPkt;
+            const uint8_t chunk = static_cast<uint8_t>(
+                (frame.len < FRAMING_FRAG_DATA) ? frame.len : FRAMING_FRAG_DATA);
+            framingBuildDataPacket(primerPkt, seq, 0, total_frags, false,
+                                   frame.data, chunk, frame.len, frame_crc32);
+
+            sm.lock();
+            sm.get().radioState = RadioState::TX;
+            sm.unlock();
+
+            const int16_t primerErr = radio.transmit(primerPkt, false);
+            last_arq_tx_ms = millis();
+
+            sm.lock();
+            sm.get().radioState = RadioState::IDLE;
+            if (primerErr != RADIOLIB_ERR_NONE) {
+                sm.get().errorCount++;
+                sm.get().radioTxErrors++;
+            }
+            sm.unlock();
+
+            vTaskDelay(pdMS_TO_TICKS(RADIO_INTER_FRAG_DELAY_MS));
+        }
+
         for (uint8_t round = 0; round < RADIO_ARQ_MAX_ROUNDS && pending_mask != 0; round++) {
             ARQ_LOG("[ARQ TX:ROUND seq=%04x tot=%u round=%u pending=%08lx]\n",
                     seq, total_frags, round, static_cast<unsigned long>(pending_mask));
@@ -1006,6 +1035,7 @@ static void radioTxTask(void*) {
                 sm.unlock();
 
                 int16_t err = radio.transmit(pkt, round_end);
+                last_arq_tx_ms = millis();
 
                 sm.lock();
                 sm.get().radioState = RadioState::IDLE;

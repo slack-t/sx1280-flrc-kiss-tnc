@@ -67,6 +67,7 @@ struct Stats {
     uint8_t  preambleBits = 0;
     uint8_t  btShaping   = 0;
     uint32_t syncWord    = 0;
+    int16_t  lbtRssiThresholdDbm = 0;
     uint16_t configCrc16 = 0;
     uint8_t  configVersion = 0;
     uint8_t  configSource = 0;
