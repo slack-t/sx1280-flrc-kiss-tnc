@@ -310,8 +310,71 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
         return;
     }
 
+    if (strcasecmp(verb, "SCAN") == 0) {
+        float startMHz = 2400.0f;
+        float stopMHz  = 2500.0f;
+        float stepMHz  = 5.0f;
+        long  dwellUs  = 1000;
+
+        for (char* token = strtok_r(nullptr, " \t\r\n", &save);
+             token != nullptr;
+             token = strtok_r(nullptr, " \t\r\n", &save)) {
+            char* eq = strchr(token, '=');
+            if (!eq) { sendControlResponse("ERR expected key=value"); return; }
+            *eq = '\0';
+            const char* key   = token;
+            const char* value = eq + 1;
+            if (strcasecmp(key, "start") == 0) {
+                if (!parseFloatValue(value, startMHz)) { sendControlResponse("ERR invalid start"); return; }
+            } else if (strcasecmp(key, "stop") == 0) {
+                if (!parseFloatValue(value, stopMHz)) { sendControlResponse("ERR invalid stop"); return; }
+            } else if (strcasecmp(key, "step") == 0) {
+                if (!parseFloatValue(value, stepMHz)) { sendControlResponse("ERR invalid step"); return; }
+            } else if (strcasecmp(key, "dwell") == 0) {
+                if (!parseIntValue(value, dwellUs)) { sendControlResponse("ERR invalid dwell"); return; }
+            } else {
+                sendControlResponse("ERR unknown scan key");
+                return;
+            }
+        }
+
+        if (startMHz < 2400.0f || stopMHz > 2500.0f || stepMHz < 1.0f || startMHz >= stopMHz) {
+            sendControlResponse("ERR scan range: start/stop must be 2400..2500, step >= 1");
+            return;
+        }
+
+        constexpr uint8_t SCAN_MAX_N = 50;
+        int8_t rssiSamples[SCAN_MAX_N];
+        uint8_t n = radio.scanBand(startMHz, stopMHz, stepMHz,
+                                   static_cast<uint32_t>(dwellUs), rssiSamples, SCAN_MAX_N);
+        if (n == 0) {
+            sendControlResponse("ERR scan failed");
+            return;
+        }
+
+        float bestFreq  = startMHz;
+        int8_t bestRssi = rssiSamples[0];
+        for (uint8_t i = 1; i < n; i++) {
+            if (rssiSamples[i] < bestRssi) {
+                bestRssi = rssiSamples[i];
+                bestFreq = startMHz + i * stepMHz;
+            }
+        }
+
+        char response[255];
+        int pos = snprintf(response, sizeof(response),
+                           "OK SCAN start=%.0f stop=%.0f step=%.0f n=%u best=%.0f rssi=",
+                           startMHz, stopMHz, stepMHz, (unsigned)n, bestFreq);
+        for (uint8_t i = 0; i < n && pos < (int)sizeof(response) - 5; i++) {
+            if (i > 0) response[pos++] = ',';
+            pos += snprintf(response + pos, sizeof(response) - pos, "%d", (int)rssiSamples[i]);
+        }
+        sendControlResponse(response);
+        return;
+    }
+
     if (strcasecmp(verb, "SET") != 0) {
-        sendControlResponse("ERR expected GET, SET, or DEFAULTS");
+        sendControlResponse("ERR expected GET, SET, SCAN, or DEFAULTS");
         return;
     }
 
@@ -633,6 +696,15 @@ static void radioRxTask(void*) {
         }
 
         // ── Generic fragmented ARQ RX path ────────────────────────────────────
+        // In native mode, only NATIVE-type packets are expected. A DATA packet
+        // here means the remote node is in generic mode — discard rather than
+        // running ARQ reassembly, which would corrupt the wait_ms timing loop
+        // and send spurious ACK transmissions.
+        if (modemConfig.transportMode == TransportMode::NATIVE_PACKET) {
+            noteRadioRxError();
+            continue;
+        }
+
         DataFrameHeader dataHdr;
         if (!framingParseDataHeader(pkt, dataHdr)) {
             noteMalformedData();
@@ -740,12 +812,15 @@ static void radioTxTask(void*) {
             continue;
         }
 
-        // LBT-CSMA: sense channel before any first transmission.
-        for (int lbt = 0; radio.isChannelBusy(); lbt++) {
-            if (lbt >= RADIO_LBT_MAX_RETRIES) break;
-            uint32_t backoff_ms = RADIO_LBT_BACKOFF_MIN_MS +
-                (esp_random() % (RADIO_LBT_BACKOFF_MAX_MS - RADIO_LBT_BACKOFF_MIN_MS + 1));
-            vTaskDelay(pdMS_TO_TICKS(backoff_ms));
+        // LBT-CSMA: skip entirely when disabled to avoid the 500µs dwell + SPI
+        // read overhead on every TX.
+        if (modemConfig.lbtRssiThresholdDbm != 0) {
+            for (int lbt = 0; radio.isChannelBusy(); lbt++) {
+                if (lbt >= RADIO_LBT_MAX_RETRIES) break;
+                uint32_t backoff_ms = RADIO_LBT_BACKOFF_MIN_MS +
+                    (esp_random() % (RADIO_LBT_BACKOFF_MAX_MS - RADIO_LBT_BACKOFF_MIN_MS + 1));
+                vTaskDelay(pdMS_TO_TICKS(backoff_ms));
+            }
         }
 
         // ── Native single-packet TX path ─────────────────────────────────────
@@ -1015,7 +1090,7 @@ static void serialTxTask(void*) {
                 if (!in_retry) {
                     retry_start_ms = millis();
                     in_retry = true;
-                } else if (millis() - retry_start_ms > 50) { // 50 ms timeout
+                } else if (millis() - retry_start_ms > 500) { // 500 ms timeout
                     sm.lock();
                     sm.get().serialTxTimeouts++;
                     sm.unlock();

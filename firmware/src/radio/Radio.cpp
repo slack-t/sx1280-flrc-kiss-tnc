@@ -198,9 +198,38 @@ bool Radio::isChannelBusy() {
     // via SX1280 command 0x15 (GetInstantaneousRssi), which is non-destructive.
     xSemaphoreTake(_spiMutex, portMAX_DELAY);
     delayMicroseconds(RADIO_LBT_SENSE_US);
-    float rssi = _radio.getRSSI();
+    int8_t rssi = _radio.getInstantRssi();
     xSemaphoreGive(_spiMutex);
-    return _config.lbtRssiThresholdDbm != 0 && rssi > (float)_config.lbtRssiThresholdDbm;
+    return _config.lbtRssiThresholdDbm != 0 && rssi > (int8_t)_config.lbtRssiThresholdDbm;
+}
+
+uint8_t Radio::scanBand(float startMHz, float stopMHz, float stepMHz,
+                        uint32_t dwellUs, int8_t* rssiOut, uint8_t maxN) {
+    xSemaphoreTake(_spiMutex, portMAX_DELAY);
+    _txActive = true;  // suppress DIO1 ISR while off-channel
+
+    const ModemConfig savedConfig = _config;
+    uint8_t n = 0;
+    ModemConfig scanCfg = savedConfig;
+    for (float f = startMHz; f <= stopMHz + 0.01f && n < maxN; f += stepMHz) {
+        scanCfg.freqMHz = f;
+        if (_applyConfigNoLock(scanCfg) != RADIOLIB_ERR_NONE) {
+            break;
+        }
+        // beginFLRC() leaves the radio in standby; put it into active RX mode so
+        // the instantaneous RSSI register is being updated by the AGC.
+        _startReceiveNoLock(true);
+        delayMicroseconds(dwellUs);
+        // getRSSI() calls GET_PACKET_STATUS and returns 0 unless a packet was
+        // received on this frequency.  Use GET_RSSI_INST (0x1F) directly instead.
+        rssiOut[n++] = _radio.getInstantRssi();
+    }
+
+    _applyConfigNoLock(savedConfig);
+    _startReceiveNoLock(true);
+    _txActive = false;
+    xSemaphoreGive(_spiMutex);
+    return n;
 }
 
 void IRAM_ATTR Radio::_dio1Isr() {

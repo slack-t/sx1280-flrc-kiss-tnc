@@ -249,24 +249,76 @@ def run_tui(stdscr, client: ModemClient):
                     status = f"Save failed: {exc}"
 
 
+def _print_scan_chart(response: str) -> None:
+    """Parse a SCAN response and print a compact ASCII bar chart."""
+    if not response.startswith("OK SCAN "):
+        return
+    parts = {}
+    for token in response[8:].split():
+        if "=" in token:
+            k, v = token.split("=", 1)
+            parts[k] = v
+
+    try:
+        start  = float(parts["start"])
+        step   = float(parts["step"])
+        best   = float(parts["best"])
+        values = [int(x) for x in parts["rssi"].split(",")]
+    except (KeyError, ValueError):
+        return
+
+    floor_dbm = -120
+    ceil_dbm  = -40
+    bar_width = 40
+
+    print(f"\n  {'MHz':>6}  {'dBm':>5}  {'':40}  note")
+    print(f"  {'------':>6}  {'-----':>5}  {'-'*40}")
+    for i, rssi in enumerate(values):
+        freq = start + i * step
+        clamped = max(floor_dbm, min(ceil_dbm, rssi))
+        filled = int((clamped - floor_dbm) / (ceil_dbm - floor_dbm) * bar_width)
+        bar = "#" * filled + "." * (bar_width - filled)
+        note = "<-- best" if freq == best else ""
+        print(f"  {freq:6.0f}  {rssi:5d}  [{bar}]  {note}")
+    print(f"\n  Quietest channel: {best:.0f} MHz")
+
+
 def main():
     parser = argparse.ArgumentParser(description="TUI for runtime SX1280 FLRC modem settings")
     parser.add_argument("--port", default="/dev/ttyACM0", help="Serial port (default: /dev/ttyACM0)")
     parser.add_argument("--baud", type=int, default=921600,
                         help="Baud rate (ignored by ESP32-S3 native USB CDC)")
-    parser.add_argument("--timeout", type=float, default=2.0, help="Command timeout in seconds")
+    parser.add_argument("--timeout", type=float, default=30.0, help="Command timeout in seconds")
     parser.add_argument("--boot-wait", type=float, default=3.0,
                         help="Seconds to wait after opening serial before first command")
     parser.add_argument("--retries", type=int, default=5,
                         help="Control command retries before failing")
     parser.add_argument("--probe", action="store_true",
                         help="Send GET, print the response, and exit without curses")
+    parser.add_argument("--scan", action="store_true",
+                        help="Sweep the 2.4 GHz band and print a channel occupancy chart")
+    parser.add_argument("--scan-start", type=float, default=2400.0,
+                        help="Scan start frequency in MHz (default: 2400)")
+    parser.add_argument("--scan-stop", type=float, default=2500.0,
+                        help="Scan stop frequency in MHz (default: 2500)")
+    parser.add_argument("--scan-step", type=float, default=5.0,
+                        help="Scan frequency step in MHz (default: 5)")
+    parser.add_argument("--scan-dwell", type=int, default=1000,
+                        help="Dwell time per step in microseconds (default: 1000)")
     args = parser.parse_args()
 
     client = ModemClient(args.port, args.baud, args.timeout, args.boot_wait, args.retries)
     try:
         if args.probe:
             print(client.command("GET"))
+        elif args.scan:
+            cmd = (f"SCAN start={args.scan_start:.0f} stop={args.scan_stop:.0f}"
+                   f" step={args.scan_step:.0f} dwell={args.scan_dwell}")
+            print(f"Scanning {args.scan_start:.0f}–{args.scan_stop:.0f} MHz "
+                  f"(step={args.scan_step:.0f} MHz, dwell={args.scan_dwell} µs)…")
+            resp = client.command(cmd)
+            print(resp)
+            _print_scan_chart(resp)
         else:
             curses.wrapper(run_tui, client)
     finally:

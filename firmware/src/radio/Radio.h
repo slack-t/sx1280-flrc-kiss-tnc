@@ -4,6 +4,20 @@
 #include "../kiss/Kiss.h"
 #include "../config/ModemConfig.h"
 
+// Thin wrapper to expose SX1280 command 0x1F (GetRssiInst).
+// RadioLib defines RADIOLIB_SX128X_CMD_GET_RSSI_INST but never calls it;
+// getRSSI() only reads the last-packet status and returns 0 between packets.
+// A subclass can call protected getMod() from within its own scope.
+class SX1280Ext : public SX1280 {
+public:
+    using SX1280::SX1280;
+    int8_t getInstantRssi() {
+        uint8_t raw = 0;
+        getMod()->SPIreadStream(RADIOLIB_SX128X_CMD_GET_RSSI_INST, &raw, 1);
+        return -(int8_t)(raw / 2);
+    }
+};
+
 #define ERR_SPURIOUS_IRQ -1000
 #define ERR_INVALID_PACKET_LEN -1001
 #define ERR_RX_TIMEOUT -1002
@@ -35,6 +49,13 @@ public:
     // active on the channel (used for Listen-Before-Talk CSMA).
     bool isChannelBusy();
 
+    // Sweep startMHz..stopMHz in stepMHz increments, dwelling dwellUs microseconds
+    // per step, and store instantaneous RSSI (dBm) into rssiOut[0..n-1].
+    // Holds the SPI mutex across the entire scan; restores original config on return.
+    // Returns the number of samples written (≤ maxN).
+    uint8_t scanBand(float startMHz, float stopMHz, float stepMHz,
+                     uint32_t dwellUs, int8_t* rssiOut, uint8_t maxN);
+
     // Last received signal strength (dBm)
     int8_t lastRssi() const { return _lastRssi; }
     int16_t lastRadioErr() const { return _lastRadioErr; }
@@ -49,7 +70,7 @@ public:
     volatile bool _txActive = false;
 
 private:
-    SX1280 _radio = new Module(RADIO_NSS, RADIO_DIO1, RADIO_RST, RADIO_BUSY);
+    SX1280Ext _radio = new Module(RADIO_NSS, RADIO_DIO1, RADIO_RST, RADIO_BUSY);
 
     SemaphoreHandle_t _spiMutex = nullptr;
 
