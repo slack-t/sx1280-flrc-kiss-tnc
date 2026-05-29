@@ -41,9 +41,18 @@ static Display display;
 static ModemConfig modemConfig;
 static ModemConfigSource modemConfigSource = ModemConfigSource::DEFAULTS;
 
-static QueueHandle_t txQueue;   // PayloadFrame: SerialRX → RadioTX
-static QueueHandle_t rxQueue;   // PayloadFrame: RadioRX  → SerialTX
-static QueueHandle_t ackQueue;  // AckFrame: RadioRX  → RadioTX
+static QueueHandle_t txQueue;       // PayloadFrame: SerialRX → RadioTX
+static QueueHandle_t rxQueue;       // PayloadFrame: RadioRX  → SerialTX
+static QueueHandle_t ackQueue;      // AckFrame:     RadioRX  → RadioTX
+static QueueHandle_t controlQueue;  // ControlFrame: RadioRX  → RadioTX
+
+// Link-health state. Written by radioTxTask; last_link_activity_ms also
+// written by radioRxTask. Both tasks live on Core 1 so volatile 32-bit
+// aligned writes are sufficient.
+static volatile uint32_t g_last_link_activity_ms        = 0;
+static volatile uint32_t g_last_bidirectional_ctrl_ms   = 0;
+static volatile bool     g_link_ever_confirmed          = false;
+static uint16_t          g_control_seq                  = 0;  // only incremented by radioTxTask
 
 static void refreshModemStats() {
     auto& sm = StatsManager::instance();
@@ -64,6 +73,58 @@ static void refreshModemStats() {
     sm.get().configVersion = MODEM_CONFIG_PROTOCOL_VERSION;
     sm.get().configSource = static_cast<uint8_t>(modemConfigSource);
     sm.get().transportMode = static_cast<uint8_t>(modemConfig.transportMode);
+    sm.unlock();
+}
+
+static inline bool isLinkReady() {
+    if (!g_link_ever_confirmed) return false;
+    return (millis() - g_last_bidirectional_ctrl_ms) <= RADIO_LINK_READY_TTL_MS;
+}
+
+static inline bool isLinkIdle() {
+    return (millis() - g_last_link_activity_ms) >= RADIO_LINK_IDLE_MS;
+}
+
+static void noteLinkActivity() {
+    g_last_link_activity_ms = millis();
+}
+
+static void noteControlMalformed() {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    sm.get().controlMalformedDrops++;
+    sm.unlock();
+}
+
+static void noteBidirectionalControl() {
+    const bool was_ready = isLinkReady();
+    g_last_bidirectional_ctrl_ms = millis();
+    g_link_ever_confirmed = true;
+    noteLinkActivity();
+    if (!was_ready) {
+        auto& sm = StatsManager::instance();
+        sm.lock();
+        sm.get().linkReadyTransitions++;
+        sm.unlock();
+    }
+}
+
+static void updateLinkStats() {
+    const bool ready = isLinkReady();
+    const uint32_t age_ms = g_link_ever_confirmed
+        ? (millis() - g_last_bidirectional_ctrl_ms)
+        : 0xFFFFFFFFu;
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    const bool was_ready = (sm.get().linkReady != 0);
+    sm.get().linkReady = ready ? 1u : 0u;
+    sm.get().linkState = ready
+        ? static_cast<uint8_t>(LinkState::READY)
+        : static_cast<uint8_t>(LinkState::DOWN);
+    sm.get().linkAgeMs = age_ms;
+    if (was_ready && !ready) {
+        sm.get().linkDownTransitions++;
+    }
     sm.unlock();
 }
 
@@ -218,7 +279,7 @@ static void noteKissMalformedFrame(bool oversize) {
 }
 
 static void sendControlResponse(const char* text) {
-    static uint8_t encBuf[512];
+    static uint8_t encBuf[1024];
     const size_t len = strlen(text);
     const size_t encLen = Kiss::encodeFrame(KISS_CONTROL_FRAME,
                                             reinterpret_cast<const uint8_t*>(text),
@@ -299,15 +360,22 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
     }
 
     if (strcasecmp(verb, "STATS") == 0) {
+        updateLinkStats();
         auto& sm = StatsManager::instance();
         sm.lock();
         Stats snapshot = sm.get();
         sm.unlock();
 
-        char response[255];
+        const char* lsName = "DOWN";
+        if (snapshot.linkState == static_cast<uint8_t>(LinkState::READY))   lsName = "READY";
+        else if (snapshot.linkState == static_cast<uint8_t>(LinkState::PROBING)) lsName = "PROBING";
+
+        char response[400];
         snprintf(response, sizeof(response),
                  "OK rx=%lu rxBytes=%lu arqDone=%lu arqMetaDrop=%lu arqIntDrop=%lu arqCrc=%lu "
-                 "stxZero=%lu stxTimeout=%lu stxEncodeFail=%lu rxQWait=%lu",
+                 "stxZero=%lu stxTimeout=%lu stxEncodeFail=%lu rxQWait=%lu "
+                 "linkReady=%u linkState=%s linkAgeMs=%lu "
+                 "hbTx=%lu hbAckRx=%lu dpTx=%lu drRx=%lu primerTO=%lu",
                  snapshot.rxCount,
                  snapshot.rxBytes,
                  snapshot.arqFramesCompleted,
@@ -317,7 +385,15 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
                  snapshot.serialTxZeroWrites,
                  snapshot.serialTxTimeouts,
                  snapshot.serialTxEncodeFails,
-                 snapshot.rxQueueWaitCount);
+                 snapshot.rxQueueWaitCount,
+                 snapshot.linkReady,
+                 lsName,
+                 snapshot.linkAgeMs,
+                 snapshot.controlHeartbeatTx,
+                 snapshot.controlHeartbeatAckRx,
+                 snapshot.controlDataPendingTx,
+                 snapshot.controlDataReadyRx,
+                 snapshot.controlPrimerTimeouts);
         sendControlResponse(response);
         return;
     }
@@ -723,6 +799,61 @@ static void radioRxTask(void*) {
             continue;
         }
 
+        // ── CONTROL packet dispatch ──────────────────────────────────────────
+        if (framingPacketType(pkt) == LinkPacketType::CONTROL) {
+            noteLinkActivity();
+            ControlFrame ctrl;
+            if (!framingParseControl(pkt, ctrl)) {
+                noteControlMalformed();
+                continue;
+            }
+            if (ctrl.type == ControlType::HEARTBEAT) {
+                {
+                    auto& sm = StatsManager::instance();
+                    sm.lock();
+                    sm.get().controlHeartbeatRx++;
+                    sm.unlock();
+                }
+                ControlFrame ack;
+                ack.type = ControlType::HEARTBEAT_ACK;
+                ack.seq  = ctrl.seq;
+                Packet ackPkt;
+                framingBuildControlPacket(ackPkt, ack);
+                {
+                    auto& sm = StatsManager::instance();
+                    sm.lock();
+                    sm.get().controlHeartbeatAckTx++;
+                    sm.unlock();
+                }
+                radio.transmit(ackPkt, true);
+                noteLinkActivity();
+            } else if (ctrl.type == ControlType::DATA_PENDING) {
+                {
+                    auto& sm = StatsManager::instance();
+                    sm.lock();
+                    sm.get().controlDataPendingRx++;
+                    sm.unlock();
+                }
+                ControlFrame ready;
+                ready.type = ControlType::DATA_READY;
+                ready.seq  = ctrl.seq;
+                Packet readyPkt;
+                framingBuildControlPacket(readyPkt, ready);
+                {
+                    auto& sm = StatsManager::instance();
+                    sm.lock();
+                    sm.get().controlDataReadyTx++;
+                    sm.unlock();
+                }
+                radio.transmit(readyPkt, true);
+                noteLinkActivity();
+            } else if (ctrl.type == ControlType::HEARTBEAT_ACK ||
+                       ctrl.type == ControlType::DATA_READY) {
+                xQueueSend(controlQueue, &ctrl, 0);
+            }
+            continue;
+        }
+
         if (framingPacketType(pkt) == LinkPacketType::ACK) {
             AckFrame ack;
             if (!framingParseAck(pkt, ack)) {
@@ -730,6 +861,7 @@ static void radioRxTask(void*) {
                 noteRadioRxError();
                 continue;
             }
+            noteLinkActivity();
             auto& sm = StatsManager::instance();
             sm.lock();
             sm.get().arqAckRxCount++;
@@ -743,6 +875,7 @@ static void radioRxTask(void*) {
 
         // ── Native single-packet RX path ─────────────────────────────────────
         if (framingPacketType(pkt) == LinkPacketType::NATIVE) {
+            noteLinkActivity();
             uint8_t payload_len = 0;
             if (!framingParseNativePayload(pkt, payload_len)) {
                 noteMalformedData();
@@ -871,6 +1004,7 @@ static void radioRxTask(void*) {
         const bool    is_new_frag  = !(ra.received_mask & bit);
 
         if (is_new_frag) {
+            noteLinkActivity();
             memcpy(ra.buf + idx * FRAMING_FRAG_DATA, pkt.data + FRAMING_DATA_HDR_LEN, frag_data_len);
             ra.frag_len[idx]  = frag_data_len;
             ra.received_mask |= bit;
@@ -898,13 +1032,57 @@ static void radioRxTask(void*) {
 // ── Task: Radio TX ────────────────────────────────────────────────────────────
 // Dequeues opaque payload frames, fragments into radio packets, retransmits missing
 // fragments using selective-repeat ARQ until the receiver ACK bitmap is complete.
+// When idle, sends periodic HEARTBEAT probes to maintain link-ready status.
 static void radioTxTask(void*) {
     PayloadFrame frame;
     static uint16_t seq = 0;
-    static uint32_t last_arq_tx_ms = 0;
 
     for (;;) {
-        xQueueReceive(txQueue, &frame, portMAX_DELAY);
+        // Wait for a frame; wake periodically to probe idle link health.
+        const uint32_t jitter_ms = esp_random() % (RADIO_HEARTBEAT_JITTER_MS + 1u);
+        const TickType_t wait_ticks = pdMS_TO_TICKS(RADIO_HEARTBEAT_INTERVAL_MS + jitter_ms);
+
+        if (xQueueReceive(txQueue, &frame, wait_ticks) != pdPASS) {
+            // Timeout: send a heartbeat if the link has been idle long enough.
+            if (isLinkIdle()) {
+                g_control_seq++;
+                const uint16_t cseq = g_control_seq;
+                ControlFrame ctrl;
+                ctrl.type = ControlType::HEARTBEAT;
+                ctrl.seq  = cseq;
+                Packet ctrlPkt;
+                framingBuildControlPacket(ctrlPkt, ctrl);
+                {
+                    auto& sm = StatsManager::instance();
+                    sm.lock();
+                    sm.get().controlHeartbeatTx++;
+                    sm.unlock();
+                }
+                if (radio.transmit(ctrlPkt, true) == RADIOLIB_ERR_NONE) {
+                    noteLinkActivity();
+                    ControlFrame resp;
+                    const uint32_t hb_deadline = millis() + RADIO_CONTROL_ACK_TIMEOUT_MS;
+                    while (millis() < hb_deadline) {
+                        const uint32_t rem = hb_deadline - millis();
+                        if (xQueueReceive(controlQueue, &resp, pdMS_TO_TICKS(rem)) == pdPASS) {
+                            if (resp.type == ControlType::HEARTBEAT_ACK && resp.seq == cseq) {
+                                auto& sm = StatsManager::instance();
+                                sm.lock();
+                                sm.get().controlHeartbeatAckRx++;
+                                sm.unlock();
+                                noteBidirectionalControl();
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    noteRadioTxError();
+                }
+                updateLinkStats();
+            }
+            continue;
+        }
+
         if (frame.len == 0 || frame.len > TNC_PAYLOAD_MAX_LEN) {
             noteRadioError();
             continue;
@@ -944,6 +1122,7 @@ static void radioTxTask(void*) {
                     sm.get().nativeTxCount++;
                     sm.get().txCount++;
                     sm.get().txBytes += frame.len;
+                    noteLinkActivity();
                 } else {
                     sm.get().errorCount++;
                     sm.get().radioTxErrors++;
@@ -956,6 +1135,7 @@ static void radioTxTask(void*) {
 
         // ── Generic fragmented ARQ path ───────────────────────────────────────
         xQueueReset(ackQueue);
+        xQueueReset(controlQueue);
         seq++;
         if (seq == FRAMING_SEQ_UNSET) {
             seq++;
@@ -973,31 +1153,55 @@ static void radioTxTask(void*) {
         ARQ_LOG("[ARQ TX:START seq=%04x tot=%u len=%u]\n",
                 seq, total_frags, frame.len);
 
-        const uint32_t arq_start_ms = millis();
-        if (total_frags > 1 &&
-            (last_arq_tx_ms == 0 || (arq_start_ms - last_arq_tx_ms) >= RADIO_ARQ_IDLE_PRIMER_MS)) {
-            Packet primerPkt;
-            const uint8_t chunk = static_cast<uint8_t>(
-                (frame.len < FRAMING_FRAG_DATA) ? frame.len : FRAMING_FRAG_DATA);
-            framingBuildDataPacket(primerPkt, seq, 0, total_frags, false,
-                                   frame.data, chunk, frame.len, frame_crc32);
-
-            sm.lock();
-            sm.get().radioState = RadioState::TX;
-            sm.unlock();
-
-            const int16_t primerErr = radio.transmit(primerPkt, false);
-            last_arq_tx_ms = millis();
-
-            sm.lock();
-            sm.get().radioState = RadioState::IDLE;
-            if (primerErr != RADIOLIB_ERR_NONE) {
-                sm.get().errorCount++;
-                sm.get().radioTxErrors++;
+        // DATA_PENDING/DATA_READY primer before multi-fragment bursts after idle.
+        // Single-fragment frames skip this because they act as natural primers.
+        if (total_frags > 1 && isLinkIdle()) {
+            g_control_seq++;
+            const uint16_t cseq = g_control_seq;
+            ControlFrame ctrl;
+            ctrl.type          = ControlType::DATA_PENDING;
+            ctrl.seq           = cseq;
+            ctrl.pending_frags = total_frags;
+            Packet ctrlPkt;
+            framingBuildControlPacket(ctrlPkt, ctrl);
+            {
+                auto& sm2 = StatsManager::instance();
+                sm2.lock();
+                sm2.get().controlDataPendingTx++;
+                sm2.unlock();
             }
-            sm.unlock();
-
-            vTaskDelay(pdMS_TO_TICKS(RADIO_INTER_FRAG_DELAY_MS));
+            bool primed = false;
+            for (int retry = 0; retry <= RADIO_CONTROL_MAX_RETRIES && !primed; retry++) {
+                if (radio.transmit(ctrlPkt, true) != RADIOLIB_ERR_NONE) {
+                    noteRadioTxError();
+                    break;
+                }
+                noteLinkActivity();
+                ControlFrame resp;
+                const uint32_t dp_deadline = millis() + RADIO_CONTROL_ACK_TIMEOUT_MS;
+                while (millis() < dp_deadline) {
+                    const uint32_t rem = dp_deadline - millis();
+                    if (xQueueReceive(controlQueue, &resp, pdMS_TO_TICKS(rem)) == pdPASS) {
+                        if (resp.type == ControlType::DATA_READY && resp.seq == cseq) {
+                            auto& sm2 = StatsManager::instance();
+                            sm2.lock();
+                            sm2.get().controlDataReadyRx++;
+                            sm2.unlock();
+                            noteBidirectionalControl();
+                            updateLinkStats();
+                            primed = true;
+                            break;
+                        }
+                    }
+                }
+                if (!primed) {
+                    auto& sm2 = StatsManager::instance();
+                    sm2.lock();
+                    sm2.get().controlPrimerTimeouts++;
+                    sm2.unlock();
+                }
+            }
+            // Start DATA regardless of primer outcome per plan recommendation.
         }
 
         for (uint8_t round = 0; round < RADIO_ARQ_MAX_ROUNDS && pending_mask != 0; round++) {
@@ -1035,7 +1239,6 @@ static void radioTxTask(void*) {
                 sm.unlock();
 
                 int16_t err = radio.transmit(pkt, round_end);
-                last_arq_tx_ms = millis();
 
                 sm.lock();
                 sm.get().radioState = RadioState::IDLE;
@@ -1046,6 +1249,7 @@ static void radioTxTask(void*) {
                 sm.unlock();
 
                 if (err == RADIOLIB_ERR_NONE) {
+                    noteLinkActivity();
                     sent_mask |= bit;
                 }
             }
@@ -1353,10 +1557,11 @@ void setup() {
     BOOT_LOG_LN("[main] Continuous RX mode active.");
 
     BOOT_LOG_LN("[main] Creating FreeRTOS communication queues...");
-    txQueue = xQueueCreate(TX_QUEUE_DEPTH, sizeof(PayloadFrame));
-    rxQueue = xQueueCreate(RX_QUEUE_DEPTH, sizeof(PayloadFrame));
-    ackQueue = xQueueCreate(8, sizeof(AckFrame));
-    if (txQueue == nullptr || rxQueue == nullptr || ackQueue == nullptr) {
+    txQueue      = xQueueCreate(TX_QUEUE_DEPTH, sizeof(PayloadFrame));
+    rxQueue      = xQueueCreate(RX_QUEUE_DEPTH, sizeof(PayloadFrame));
+    ackQueue     = xQueueCreate(8, sizeof(AckFrame));
+    controlQueue = xQueueCreate(4, sizeof(ControlFrame));
+    if (txQueue == nullptr || rxQueue == nullptr || ackQueue == nullptr || controlQueue == nullptr) {
         BOOT_LOG_LN("[main] CRITICAL: Failed to create FreeRTOS queues!");
         display.showError("Queue Create Fail", -99);
         while (true) { delay(1000); }

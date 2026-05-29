@@ -513,6 +513,143 @@ void test_serial_integrity() {
     TEST_ASSERT_NOT_EQUAL(sizeof(payload), bad_hdr.payload_len);
 }
 
+// ── CONTROL packet tests ──────────────────────────────────────────────────────
+
+void test_control_heartbeat_roundtrip() {
+    ControlFrame out;
+    out.type          = ControlType::HEARTBEAT;
+    out.seq           = 0x1234;
+    out.flags         = 0x05;
+    out.reason        = 0x07;
+    out.pending_frags = 0;
+    out.token         = 0xDEADBEEFu;
+
+    Packet pkt;
+    framingBuildControlPacket(pkt, out);
+
+    TEST_ASSERT_EQUAL_UINT8(PACKET_MAX_LEN, pkt.len);
+    // Byte 0: version=2 | type=CONTROL(3)
+    TEST_ASSERT_EQUAL_HEX8(0x23, pkt.data[0]);
+    TEST_ASSERT_EQUAL_HEX8(static_cast<uint8_t>(ControlType::HEARTBEAT), pkt.data[1]);
+    TEST_ASSERT_EQUAL_HEX8(0x12, pkt.data[2]);
+    TEST_ASSERT_EQUAL_HEX8(0x34, pkt.data[3]);
+    TEST_ASSERT_EQUAL_HEX8(0x05, pkt.data[4]);
+    TEST_ASSERT_EQUAL_HEX8(0x07, pkt.data[5]);
+    TEST_ASSERT_EQUAL_HEX8(0x00, pkt.data[6]);  // pending_frags=0
+    TEST_ASSERT_EQUAL_HEX8(0xDE, pkt.data[8]);
+    TEST_ASSERT_EQUAL_HEX8(0xAD, pkt.data[9]);
+    TEST_ASSERT_EQUAL_HEX8(0xBE, pkt.data[10]);
+    TEST_ASSERT_EQUAL_HEX8(0xEF, pkt.data[11]);
+
+    ControlFrame in;
+    TEST_ASSERT_TRUE(framingParseControl(pkt, in));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ControlType::HEARTBEAT),
+                            static_cast<uint8_t>(in.type));
+    TEST_ASSERT_EQUAL_UINT16(0x1234, in.seq);
+    TEST_ASSERT_EQUAL_UINT8(0x05, in.flags);
+    TEST_ASSERT_EQUAL_UINT8(0x07, in.reason);
+    TEST_ASSERT_EQUAL_UINT8(0, in.pending_frags);
+    TEST_ASSERT_EQUAL_UINT32(0xDEADBEEFu, in.token);
+}
+
+void test_control_data_pending_roundtrip() {
+    ControlFrame out;
+    out.type          = ControlType::DATA_PENDING;
+    out.seq           = 0x0042;
+    out.pending_frags = 4;
+
+    Packet pkt;
+    framingBuildControlPacket(pkt, out);
+
+    ControlFrame in;
+    TEST_ASSERT_TRUE(framingParseControl(pkt, in));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ControlType::DATA_PENDING),
+                            static_cast<uint8_t>(in.type));
+    TEST_ASSERT_EQUAL_UINT16(0x0042, in.seq);
+    TEST_ASSERT_EQUAL_UINT8(4, in.pending_frags);
+}
+
+void test_control_all_types_roundtrip() {
+    const ControlType types[] = {
+        ControlType::HEARTBEAT,
+        ControlType::HEARTBEAT_ACK,
+        ControlType::DATA_PENDING,
+        ControlType::DATA_READY,
+    };
+    for (size_t i = 0; i < 4; i++) {
+        ControlFrame out;
+        out.type = types[i];
+        out.seq  = static_cast<uint16_t>(i + 1);
+        Packet pkt;
+        framingBuildControlPacket(pkt, out);
+        ControlFrame in;
+        TEST_ASSERT_TRUE(framingParseControl(pkt, in));
+        TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(types[i]),
+                                static_cast<uint8_t>(in.type));
+        TEST_ASSERT_EQUAL_UINT16(static_cast<uint16_t>(i + 1), in.seq);
+    }
+}
+
+void test_control_reject_short_packet() {
+    Packet pkt;
+    framingBuildControlPacket(pkt, ControlFrame{});
+    pkt.len = FRAMING_CONTROL_LEN - 1;  // truncate
+    ControlFrame in;
+    TEST_ASSERT_FALSE(framingParseControl(pkt, in));
+}
+
+void test_control_reject_wrong_version() {
+    Packet pkt;
+    framingBuildControlPacket(pkt, ControlFrame{});
+    pkt.data[0] = 0x13;  // version=1 (wrong), type=CONTROL
+    ControlFrame in;
+    TEST_ASSERT_FALSE(framingParseControl(pkt, in));
+}
+
+void test_control_reject_data_packet_as_control() {
+    // A DATA packet must not parse as CONTROL
+    Packet pkt;
+    framingBuildDataPacket(pkt, 1, 0, 1, true, nullptr, 0, 0, 0);
+    ControlFrame in;
+    TEST_ASSERT_FALSE(framingParseControl(pkt, in));
+}
+
+void test_control_not_parsed_as_data() {
+    Packet pkt;
+    framingBuildControlPacket(pkt, ControlFrame{});
+    DataFrameHeader hdr;
+    TEST_ASSERT_FALSE(framingParseDataHeader(pkt, hdr));
+}
+
+void test_control_not_parsed_as_ack() {
+    Packet pkt;
+    framingBuildControlPacket(pkt, ControlFrame{});
+    AckFrame ack;
+    TEST_ASSERT_FALSE(framingParseAck(pkt, ack));
+}
+
+void test_control_seq_preserved() {
+    for (uint16_t s = 0; s < 5; s++) {
+        ControlFrame out;
+        out.type = ControlType::HEARTBEAT_ACK;
+        out.seq  = s;
+        Packet pkt;
+        framingBuildControlPacket(pkt, out);
+        ControlFrame in;
+        TEST_ASSERT_TRUE(framingParseControl(pkt, in));
+        TEST_ASSERT_EQUAL_UINT16(s, in.seq);
+    }
+}
+
+void test_control_trailing_bytes_zeroed() {
+    Packet pkt;
+    framingBuildControlPacket(pkt, ControlFrame{});
+    TEST_ASSERT_EQUAL_UINT8(PACKET_MAX_LEN, pkt.len);
+    for (int i = FRAMING_CONTROL_LEN; i < PACKET_MAX_LEN; i++) {
+        TEST_ASSERT_EQUAL_HEX8(0x00, pkt.data[i]);
+    }
+}
+
 int main(int argc, char** argv) {
     UNITY_BEGIN();
     RUN_TEST(test_roundtrip_all_bytes);
@@ -538,5 +675,15 @@ int main(int argc, char** argv) {
     RUN_TEST(test_native_parse_rejects_data_packet);
     RUN_TEST(test_crc32);
     RUN_TEST(test_serial_integrity);
+    RUN_TEST(test_control_heartbeat_roundtrip);
+    RUN_TEST(test_control_data_pending_roundtrip);
+    RUN_TEST(test_control_all_types_roundtrip);
+    RUN_TEST(test_control_reject_short_packet);
+    RUN_TEST(test_control_reject_wrong_version);
+    RUN_TEST(test_control_reject_data_packet_as_control);
+    RUN_TEST(test_control_not_parsed_as_data);
+    RUN_TEST(test_control_not_parsed_as_ack);
+    RUN_TEST(test_control_seq_preserved);
+    RUN_TEST(test_control_trailing_bytes_zeroed);
     return UNITY_END();
 }

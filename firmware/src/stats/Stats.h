@@ -10,6 +10,12 @@ enum class RadioState : uint8_t {
     ERROR,
 };
 
+enum class LinkState : uint8_t {
+    DOWN    = 0,
+    PROBING = 1,
+    READY   = 2,
+};
+
 struct Stats {
     int8_t   rssi        = 0;
     uint32_t txCount     = 0;
@@ -69,6 +75,22 @@ struct Stats {
     uint32_t syncWord    = 0;
     int16_t  lbtRssiThresholdDbm = 0;
     uint16_t configCrc16 = 0;
+    // ── Link health ──────────────────────────────────────────────────────────
+    uint32_t controlHeartbeatTx    = 0;
+    uint32_t controlHeartbeatRx    = 0;
+    uint32_t controlHeartbeatAckTx = 0;
+    uint32_t controlHeartbeatAckRx = 0;
+    uint32_t controlDataPendingTx  = 0;
+    uint32_t controlDataPendingRx  = 0;
+    uint32_t controlDataReadyTx    = 0;
+    uint32_t controlDataReadyRx    = 0;
+    uint32_t controlPrimerTimeouts = 0;
+    uint32_t controlMalformedDrops = 0;
+    uint32_t linkReadyTransitions  = 0;
+    uint32_t linkDownTransitions   = 0;
+    uint8_t  linkReady  = 0;
+    uint8_t  linkState  = 0;   // LinkState enum value
+    uint32_t linkAgeMs  = 0xFFFFFFFFu;
     uint8_t  configVersion = 0;
     uint8_t  configSource = 0;
 };

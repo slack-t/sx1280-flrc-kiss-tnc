@@ -84,6 +84,12 @@
 #define RADIO_ACK_FALLBACK_DELAY_MS  45    // Receiver waits this long before ACKing if END was lost
 #define RADIO_REASSEMBLY_TIMEOUT_MS  500   // Drop stale partial frames after silence
 #define RADIO_DUP_CACHE_MS           1500  // Re-ACK recently delivered frames without re-delivering
+#define RADIO_LINK_IDLE_MS              500   // ms without any link activity before link is considered idle
+#define RADIO_HEARTBEAT_INTERVAL_MS     1000  // ms between idle heartbeat probes
+#define RADIO_HEARTBEAT_JITTER_MS       250   // random jitter added to heartbeat interval
+#define RADIO_CONTROL_ACK_TIMEOUT_MS    40    // ms to wait for HEARTBEAT_ACK or DATA_READY
+#define RADIO_CONTROL_MAX_RETRIES       1     // DATA_PENDING retries after timeout
+#define RADIO_LINK_READY_TTL_MS         3000  // ms without bidirectional confirmation → LINK_DOWN
 
 
 // ── Task stack sizes (bytes) ─────────────────────────────────────────────────

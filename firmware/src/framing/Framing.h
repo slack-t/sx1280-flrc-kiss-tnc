@@ -13,9 +13,32 @@ struct Packet {
 };
 
 enum class LinkPacketType : uint8_t {
-    DATA   = 0,
-    ACK    = 1,
-    NATIVE = 2,
+    DATA    = 0,
+    ACK     = 1,
+    NATIVE  = 2,
+    CONTROL = 3,
+};
+
+enum class ControlType : uint8_t {
+    HEARTBEAT     = 0x01,
+    HEARTBEAT_ACK = 0x02,
+    DATA_PENDING  = 0x03,
+    DATA_READY    = 0x04,
+};
+
+// Fixed-length control packet (bytes 0-11).
+// Byte 0: [version:4][type:4], Byte 1: control_type, Bytes 2-3: seq,
+// Byte 4: flags, Byte 5: reason, Byte 6: pending_frags, Byte 7: reserved,
+// Bytes 8-11: token (uint32, big-endian).
+static constexpr uint8_t FRAMING_CONTROL_LEN = 12;
+
+struct ControlFrame {
+    ControlType type           = ControlType::HEARTBEAT;
+    uint16_t    seq            = 0;
+    uint8_t     flags          = 0;
+    uint8_t     reason         = 0;
+    uint8_t     pending_frags  = 0;
+    uint32_t    token          = 0;
 };
 
 // ── Link header ────────────────────────────────────────────────────────────────
@@ -296,6 +319,40 @@ inline bool framingValidateDataFragment(const DataFrameHeader& header) {
     if (header.payload_len != framingExpectedFragmentLen(header.frame_len, header.frag_index, header.total_frags)) {
         return false;
     }
+    return true;
+}
+
+inline void framingBuildControlPacket(Packet& pkt, const ControlFrame& ctrl) {
+    pkt.data[0]  = framingEncodeVersionType(LinkPacketType::CONTROL);
+    pkt.data[1]  = static_cast<uint8_t>(ctrl.type);
+    pkt.data[2]  = static_cast<uint8_t>(ctrl.seq >> 8);
+    pkt.data[3]  = static_cast<uint8_t>(ctrl.seq & 0xFFu);
+    pkt.data[4]  = ctrl.flags;
+    pkt.data[5]  = ctrl.reason;
+    pkt.data[6]  = ctrl.pending_frags;
+    pkt.data[7]  = 0;
+    pkt.data[8]  = static_cast<uint8_t>(ctrl.token >> 24);
+    pkt.data[9]  = static_cast<uint8_t>((ctrl.token >> 16) & 0xFFu);
+    pkt.data[10] = static_cast<uint8_t>((ctrl.token >> 8) & 0xFFu);
+    pkt.data[11] = static_cast<uint8_t>(ctrl.token & 0xFFu);
+    memset(pkt.data + FRAMING_CONTROL_LEN, 0, PACKET_MAX_LEN - FRAMING_CONTROL_LEN);
+    pkt.len = PACKET_MAX_LEN;
+}
+
+inline bool framingParseControl(const Packet& pkt, ControlFrame& ctrl) {
+    if (pkt.len < FRAMING_CONTROL_LEN) return false;
+    if (!framingHasValidVersion(pkt)) return false;
+    if (framingPacketType(pkt) != LinkPacketType::CONTROL) return false;
+    ctrl.type          = static_cast<ControlType>(pkt.data[1]);
+    ctrl.seq           = static_cast<uint16_t>(
+                             (static_cast<uint16_t>(pkt.data[2]) << 8) | pkt.data[3]);
+    ctrl.flags         = pkt.data[4];
+    ctrl.reason        = pkt.data[5];
+    ctrl.pending_frags = pkt.data[6];
+    ctrl.token         = (static_cast<uint32_t>(pkt.data[8])  << 24) |
+                         (static_cast<uint32_t>(pkt.data[9])  << 16) |
+                         (static_cast<uint32_t>(pkt.data[10]) << 8)  |
+                          static_cast<uint32_t>(pkt.data[11]);
     return true;
 }
 
