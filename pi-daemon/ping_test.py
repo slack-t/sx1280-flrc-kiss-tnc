@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 # Must match firmware config.h / Framing.h
-FRAG_DATA = 123   # data payload bytes per radio fragment (127-byte FLRC packet - 4-byte link header)
+FRAG_DATA = 114   # data payload bytes per radio fragment (127-byte FLRC packet - 13-byte link header)
 IP_HDR    = 28    # IPv4 (20) + ICMP (8) fixed overhead
 
 
@@ -186,7 +186,7 @@ def main() -> None:
                     help="Comma-separated -s values; default covers 1–4 frags")
     args = ap.parse_args()
 
-    max_s = FRAG_DATA * 4 - IP_HDR  # 472
+    max_s = FRAG_DATA * 4 - IP_HDR  # 428
 
     if args.sizes:
         sizes = sorted(set(int(s.strip()) for s in args.sizes.split(',')))

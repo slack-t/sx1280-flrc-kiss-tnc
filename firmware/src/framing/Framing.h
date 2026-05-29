@@ -40,11 +40,11 @@ enum class LinkPacketType : uint8_t {
 //   byte 8  bitmap byte 1
 //   byte 9  bitmap byte 2
 //   byte 10 bitmap byte 3 (MSB)
-static constexpr uint8_t  FRAMING_VERSION         = 1;
+static constexpr uint8_t  FRAMING_VERSION         = 2;
 static constexpr uint8_t  FRAMING_VERSION_SHIFT   = 4;
 static constexpr uint8_t  FRAMING_TYPE_MASK       = 0x0Fu;
 static constexpr uint8_t  FRAMING_FLAG_ROUND_END  = 0x01u;
-static constexpr uint8_t  FRAMING_DATA_HDR_LEN    = 7;
+static constexpr uint8_t  FRAMING_DATA_HDR_LEN    = 13;
 static constexpr uint8_t  FRAMING_ACK_HDR_LEN     = 11;
 static constexpr uint8_t  FRAMING_ACK_MASK_BYTES  = 4;
 static constexpr uint8_t  FRAMING_ACK_WINDOW_BITS = FRAMING_ACK_MASK_BYTES * 8u;
@@ -59,9 +59,9 @@ static constexpr uint8_t  FRAMING_NATIVE_MAX_PAYLOAD =
 static_assert(PACKET_MAX_LEN > FRAMING_NATIVE_HDR_LEN,
               "PACKET_MAX_LEN too small for native header");
 
-// Data bytes per fragment. Fragmented packets use a fixed 7-byte link header.
+// Data bytes per fragment. Fragmented packets use a fixed 13-byte link header.
 static constexpr uint8_t FRAMING_FRAG_DATA =
-    static_cast<uint8_t>(PACKET_MAX_LEN - FRAMING_DATA_HDR_LEN); // 120
+    static_cast<uint8_t>(PACKET_MAX_LEN - FRAMING_DATA_HDR_LEN); // 114
 static constexpr uint8_t FRAMING_MAX_FRAGS = static_cast<uint8_t>(
     (TNC_PAYLOAD_MAX_LEN + FRAMING_FRAG_DATA - 1u) / FRAMING_FRAG_DATA); // 9
 
@@ -87,6 +87,8 @@ struct DataFrameHeader {
     uint8_t  frag_index  = 0;
     uint8_t  total_frags = 0;
     uint8_t  payload_len = 0;
+    uint16_t frame_len   = 0;
+    uint32_t frame_crc32 = 0;
     bool     round_end   = false;
 };
 
@@ -138,6 +140,11 @@ inline bool framingParseDataHeader(const Packet& pkt, DataFrameHeader& header) {
     header.frag_index  = pkt.data[4];
     header.total_frags = pkt.data[5];
     header.payload_len = pkt.data[6];
+    header.frame_len   = static_cast<uint16_t>((pkt.data[7] << 8) | pkt.data[8]);
+    header.frame_crc32 = (static_cast<uint32_t>(pkt.data[9]) << 24) |
+                         (static_cast<uint32_t>(pkt.data[10]) << 16) |
+                         (static_cast<uint32_t>(pkt.data[11]) << 8) |
+                          static_cast<uint32_t>(pkt.data[12]);
     header.round_end   = (pkt.data[1] & FRAMING_FLAG_ROUND_END) != 0;
 
     if (header.total_frags == 0 || header.total_frags > FRAMING_MAX_FRAGS) {
@@ -204,7 +211,9 @@ inline void framingBuildDataPacket(Packet& pkt,
                                    uint8_t total_frags,
                                    bool round_end,
                                    const uint8_t* payload,
-                                   uint8_t payload_len) {
+                                   uint8_t payload_len,
+                                   uint16_t frame_len,
+                                   uint32_t frame_crc32) {
     pkt.data[0] = framingEncodeVersionType(LinkPacketType::DATA);
     pkt.data[1] = round_end ? FRAMING_FLAG_ROUND_END : 0;
     pkt.data[2] = static_cast<uint8_t>(seq >> 8);
@@ -212,6 +221,12 @@ inline void framingBuildDataPacket(Packet& pkt,
     pkt.data[4] = idx;
     pkt.data[5] = total_frags;
     pkt.data[6] = payload_len;
+    pkt.data[7] = static_cast<uint8_t>(frame_len >> 8);
+    pkt.data[8] = static_cast<uint8_t>(frame_len & 0xFFu);
+    pkt.data[9] = static_cast<uint8_t>(frame_crc32 >> 24);
+    pkt.data[10] = static_cast<uint8_t>((frame_crc32 >> 16) & 0xFFu);
+    pkt.data[11] = static_cast<uint8_t>((frame_crc32 >> 8) & 0xFFu);
+    pkt.data[12] = static_cast<uint8_t>(frame_crc32 & 0xFFu);
     if (payload_len > 0) {
         memcpy(pkt.data + FRAMING_DATA_HDR_LEN, payload, payload_len);
     }
@@ -252,6 +267,38 @@ inline bool framingParseNativePayload(const Packet& pkt, uint8_t& payload_len) {
     return pkt.len >= static_cast<uint8_t>(FRAMING_NATIVE_HDR_LEN + payload_len);
 }
 
+// ── Validation Helpers ────────────────────────────────────────────────────────
+
+inline uint8_t framingExpectedTotalFrags(uint16_t frame_len) {
+    if (frame_len == 0) return 0;
+    return static_cast<uint8_t>((frame_len + FRAMING_FRAG_DATA - 1) / FRAMING_FRAG_DATA);
+}
+
+inline uint8_t framingExpectedFragmentLen(uint16_t frame_len, uint8_t frag_index, uint8_t total_frags) {
+    if (frag_index >= total_frags) return 0;
+    if (frag_index < total_frags - 1) {
+        return FRAMING_FRAG_DATA;
+    }
+    uint8_t remainder = static_cast<uint8_t>(frame_len % FRAMING_FRAG_DATA);
+    return remainder == 0 ? FRAMING_FRAG_DATA : remainder;
+}
+
+inline bool framingValidateDataFragment(const DataFrameHeader& header) {
+    if (header.frame_len == 0 || header.frame_len > TNC_PAYLOAD_MAX_LEN) {
+        return false;
+    }
+    if (header.total_frags != framingExpectedTotalFrags(header.frame_len)) {
+        return false;
+    }
+    if (header.frag_index >= header.total_frags) {
+        return false;
+    }
+    if (header.payload_len != framingExpectedFragmentLen(header.frame_len, header.frag_index, header.total_frags)) {
+        return false;
+    }
+    return true;
+}
+
 // ── Fragment reassembler ───────────────────────────────────────────────────────
 struct Reassembler {
     uint16_t seq           = FRAMING_SEQ_UNSET;
@@ -259,6 +306,8 @@ struct Reassembler {
     uint16_t frag_len[FRAMING_MAX_FRAGS];
     uint32_t received_mask = 0;
     uint8_t  total_frags   = 0;
+    uint16_t frame_len     = 0;
+    uint32_t frame_crc32   = 0;
     bool     ack_pending   = false;
     int8_t   last_rssi     = 0;
     uint32_t last_tick_ms  = 0;
@@ -268,6 +317,8 @@ struct Reassembler {
         seq           = FRAMING_SEQ_UNSET;
         received_mask = 0;
         total_frags   = 0;
+        frame_len     = 0;
+        frame_crc32   = 0;
         ack_pending   = false;
         last_rssi     = 0;
         last_tick_ms  = 0;

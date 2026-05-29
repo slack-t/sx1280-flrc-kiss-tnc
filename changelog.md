@@ -2,6 +2,14 @@
 
 ## 2026-05-29
 
+### ARQ Integrity v2
+
+- Expanded generic DATA fragment header from 7 to 13 bytes (`FRAMING_VERSION` 2).
+- Added `frame_len` and `frame_crc32` to per-fragment headers to prevent delivery of corrupted/truncated payloads.
+- Added strict length and exact-fragment-remainder validation to receiver logic.
+- Fragment payloads are reduced from 123 to 114 bytes (MTU 114 * 4 = 456).
+- Added tracking counters for metadata drops and integrity drops in Stats.h.
+
 ### Frequency scan (SCAN command)
 
 - Added `Radio::scanBand()` which sweeps a frequency range, dwelling `dwellUs` at each step, and

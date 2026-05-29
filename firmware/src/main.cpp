@@ -7,6 +7,7 @@
 #include "radio/Radio.h"
 #include "kiss/Kiss.h"
 #include "framing/Framing.h"
+#include "framing/Crc32.h"
 #include "display/Display.h"
 #include "stats/Stats.h"
 #include "config/ModemConfig.h"
@@ -67,6 +68,8 @@ static void refreshModemStats() {
 struct CompletedFrameCache {
     uint16_t seq         = FRAMING_SEQ_UNSET;
     uint8_t  total_frags = 0;
+    uint16_t frame_len   = 0;
+    uint32_t frame_crc32 = 0;
     uint32_t ack_mask    = 0;
     uint32_t tick_ms     = 0;
 };
@@ -524,6 +527,8 @@ static void finalizeReassembly(Reassembler& ra, CompletedFrameCache& completed) 
             ra.seq, ra.total_frags, static_cast<unsigned long>(ra.received_mask), frame.len);
     completed.seq         = ra.seq;
     completed.total_frags = ra.total_frags;
+    completed.frame_len   = ra.frame_len;
+    completed.frame_crc32 = ra.frame_crc32;
     completed.ack_mask    = ra.received_mask;
     completed.tick_ms     = millis();
     ra.reset();
@@ -570,6 +575,32 @@ static void noteReassemblyDrop() {
     sm.unlock();
 }
 
+static bool isReassemblyValid(const Reassembler& ra) {
+    if (ra.frame_len == 0 || ra.frame_len > TNC_PAYLOAD_MAX_LEN) {
+        return false;
+    }
+    uint16_t assembled_len = 0;
+    for (uint8_t i = 0; i < ra.total_frags; i++) {
+        assembled_len += ra.frag_len[i];
+    }
+    if (assembled_len != ra.frame_len) {
+        auto& sm = StatsManager::instance();
+        sm.lock();
+        sm.get().arqReassemblyIntegrityDrops++;
+        sm.unlock();
+        return false;
+    }
+    uint32_t computed_crc = framing::computeCrc32(ra.buf, assembled_len);
+    if (computed_crc != ra.frame_crc32) {
+        auto& sm = StatsManager::instance();
+        sm.lock();
+        sm.get().arqFrameCrcErrors++;
+        sm.unlock();
+        return false;
+    }
+    return true;
+}
+
 // ── Task: Radio RX ────────────────────────────────────────────────────────────
 // Receives radio packets, reassembles fragments into opaque payloads, pushes to rxQueue.
 static void radioRxTask(void*) {
@@ -585,6 +616,10 @@ static void radioRxTask(void*) {
             if (ra.ack_pending) {
                 const uint32_t now_ms = millis();
                 if (now_ms >= ra.ack_due_ms) {
+                    if (ra.isComplete() && !isReassemblyValid(ra)) {
+                        ra.reset();
+                        continue;
+                    }
                     sendAckForReassembly(ra);
                     if (!ra.ack_pending && ra.isComplete()) {
                         finalizeReassembly(ra, completed);
@@ -604,6 +639,10 @@ static void radioRxTask(void*) {
         BaseType_t got = xSemaphoreTake(radio.rxSemaphore, pdMS_TO_TICKS(wait_ms));
         if (got == pdFALSE) {
             if (ra.seq != FRAMING_SEQ_UNSET && ra.ack_pending) {
+                if (ra.isComplete() && !isReassemblyValid(ra)) {
+                    ra.reset();
+                    continue;
+                }
                 sendAckForReassembly(ra);
                 if (!ra.ack_pending && ra.isComplete()) {
                     finalizeReassembly(ra, completed);
@@ -711,15 +750,28 @@ static void radioRxTask(void*) {
             noteRadioRxError();
             continue;
         }
+
+        if (!framingValidateDataFragment(dataHdr)) {
+            auto& sm = StatsManager::instance();
+            sm.lock();
+            sm.get().arqFragmentMetadataDrops++;
+            sm.unlock();
+            continue;
+        }
+
         const uint16_t seq          = dataHdr.seq;
         const uint8_t idx           = dataHdr.frag_index;
         const uint8_t total_frags   = dataHdr.total_frags;
         const uint8_t frag_data_len = dataHdr.payload_len;
+        const uint16_t frame_len    = dataHdr.frame_len;
+        const uint32_t frame_crc32  = dataHdr.frame_crc32;
         const bool    round_end     = dataHdr.round_end;
         const uint32_t now_ms       = millis();
 
         if (completed.seq == seq &&
             completed.total_frags == total_frags &&
+            completed.frame_len == frame_len &&
+            completed.frame_crc32 == frame_crc32 &&
             (now_ms - completed.tick_ms) <= RADIO_DUP_CACHE_MS) {
             ARQ_LOG("[ARQ RX:DUP seq=%04x tot=%u mask=%08lx]\n",
                     seq, total_frags, static_cast<unsigned long>(completed.ack_mask));
@@ -762,12 +814,14 @@ static void radioRxTask(void*) {
             ra.reset();
             ra.seq         = seq;
             ra.total_frags = total_frags;
-        } else if (ra.total_frags != total_frags) {
-            noteIdentityReset();
-            noteReassemblyDrop();
-            ra.reset();
-            ra.seq         = seq;
-            ra.total_frags = total_frags;
+            ra.frame_len   = frame_len;
+            ra.frame_crc32 = frame_crc32;
+        } else if (ra.total_frags != total_frags || ra.frame_len != frame_len || ra.frame_crc32 != frame_crc32) {
+            auto& sm = StatsManager::instance();
+            sm.lock();
+            sm.get().arqFragmentMetadataDrops++;
+            sm.unlock();
+            continue;
         }
 
         const uint32_t bit         = 1u << idx;
@@ -862,8 +916,8 @@ static void radioTxTask(void*) {
         if (seq == FRAMING_SEQ_UNSET) {
             seq++;
         }
-        const uint8_t total_frags = static_cast<uint8_t>(
-            (frame.len + FRAMING_FRAG_DATA - 1) / FRAMING_FRAG_DATA);
+        const uint8_t total_frags = framingExpectedTotalFrags(frame.len);
+        const uint32_t frame_crc32 = framing::computeCrc32(frame.data, frame.len);
         uint32_t pending_mask = framingExpectedMask(total_frags);
         bool delivered = false;
 
@@ -899,7 +953,7 @@ static void radioTxTask(void*) {
 
                 Packet pkt;
                 framingBuildDataPacket(pkt, seq, idx, total_frags, round_end,
-                                       frame.data + offset, chunk);
+                                       frame.data + offset, chunk, frame.len, frame_crc32);
 
                 sm.lock();
                 sm.get().radioState = RadioState::TX;

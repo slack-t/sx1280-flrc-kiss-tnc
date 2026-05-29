@@ -5,6 +5,7 @@
 #define PACKET_MAX_LEN 127
 #include "../../src/kiss/Kiss.h"
 #include "../../src/kiss/Kiss.cpp"
+#include "../../src/framing/Crc32.h"
 
 void setUp() {}
 void tearDown() {}
@@ -148,7 +149,7 @@ void test_link_data_packet_roundtrip() {
         payload[i] = static_cast<uint8_t>(i);
     }
 
-    framingBuildDataPacket(pkt, 0x1234, 2, 9, true, payload, 31);
+    framingBuildDataPacket(pkt, 0x1234, 2, 9, true, payload, 114, 943, 0xCAFEBABEu);
 
     DataFrameHeader decoded;
     TEST_ASSERT_TRUE(framingParseDataHeader(pkt, decoded));
@@ -158,9 +159,44 @@ void test_link_data_packet_roundtrip() {
     TEST_ASSERT_EQUAL_UINT8(2, decoded.frag_index);
     TEST_ASSERT_EQUAL_UINT8(9, decoded.total_frags);
     TEST_ASSERT_TRUE(decoded.round_end);
-    TEST_ASSERT_EQUAL_UINT8(31, decoded.payload_len);
-    TEST_ASSERT_EQUAL_MEMORY(payload, pkt.data + FRAMING_DATA_HDR_LEN, 31);
+    TEST_ASSERT_EQUAL_UINT8(114, decoded.payload_len);
+    TEST_ASSERT_EQUAL_UINT16(943, decoded.frame_len);
+    TEST_ASSERT_EQUAL_HEX32(0xCAFEBABEu, decoded.frame_crc32);
+    TEST_ASSERT_EQUAL_MEMORY(payload, pkt.data + FRAMING_DATA_HDR_LEN, 114);
 }
+
+void test_framing_validation() {
+    DataFrameHeader hdr;
+    hdr.seq = 0x1111;
+    hdr.total_frags = 9;
+    hdr.frag_index = 8;
+    hdr.payload_len = 31;
+    hdr.frame_len = 943;
+    hdr.frame_crc32 = 0;
+    
+    // Valid final
+    TEST_ASSERT_TRUE(framingValidateDataFragment(hdr));
+    
+    // Valid non-final
+    hdr.frag_index = 2;
+    hdr.payload_len = 114;
+    TEST_ASSERT_TRUE(framingValidateDataFragment(hdr));
+    
+    // Invalid non-final length
+    hdr.payload_len = 31;
+    TEST_ASSERT_FALSE(framingValidateDataFragment(hdr));
+    
+    // Invalid total frags
+    hdr.payload_len = 114;
+    hdr.total_frags = 8;
+    TEST_ASSERT_FALSE(framingValidateDataFragment(hdr));
+    
+    // Invalid frame length bounds
+    hdr.total_frags = 9;
+    hdr.frame_len = 10000;
+    TEST_ASSERT_FALSE(framingValidateDataFragment(hdr));
+}
+
 
 void test_link_ack_packet_roundtrip() {
     Packet pkt;
@@ -433,10 +469,25 @@ void test_native_packet_oversize_rejected() {
 
 void test_native_parse_rejects_data_packet() {
     Packet pkt;
-    framingBuildDataPacket(pkt, 0x0001, 0, 1, true, nullptr, 0);
+    framingBuildDataPacket(pkt, 0x0001, 0, 1, true, nullptr, 0, 0, 0);
 
     uint8_t out = 0;
     TEST_ASSERT_FALSE(framingParseNativePayload(pkt, out));
+}
+
+void test_crc32() {
+    // Empty payload
+    uint8_t empty[] = {};
+    TEST_ASSERT_EQUAL_HEX32(0x0, framing::computeCrc32(empty, 0));
+
+    // Short payload
+    uint8_t short_payload[] = "hello";
+    TEST_ASSERT_EQUAL_HEX32(0x3610a686, framing::computeCrc32(short_payload, 5));
+
+    // 1024-byte payload
+    uint8_t large_payload[1024];
+    memset(large_payload, 'a', 1024);
+    TEST_ASSERT_EQUAL_HEX32(0x7c5597b9, framing::computeCrc32(large_payload, 1024));
 }
 
 int main(int argc, char** argv) {
@@ -449,6 +500,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_non_zero_port_dropped);
     RUN_TEST(test_empty_frame_ignored);
     RUN_TEST(test_link_data_packet_roundtrip);
+    RUN_TEST(test_framing_validation);
     RUN_TEST(test_link_ack_packet_roundtrip);
     RUN_TEST(test_back_to_back_double_fend);
     RUN_TEST(test_large_frame_roundtrip);
@@ -461,5 +513,6 @@ int main(int argc, char** argv) {
     RUN_TEST(test_native_packet_max_payload);
     RUN_TEST(test_native_packet_oversize_rejected);
     RUN_TEST(test_native_parse_rejects_data_packet);
+    RUN_TEST(test_crc32);
     return UNITY_END();
 }

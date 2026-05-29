@@ -23,6 +23,9 @@ struct Stats {
     uint32_t arqRetryCount       = 0;
     uint32_t arqAckTimeoutCount  = 0;
     uint32_t arqReassemblyDrops  = 0;
+    uint32_t arqFragmentMetadataDrops = 0;
+    uint32_t arqReassemblyIntegrityDrops = 0;
+    uint32_t arqFrameCrcErrors   = 0;
     uint32_t arqAckTxCount       = 0;
     uint32_t arqAckRxCount       = 0;
     uint32_t arqAckTxErrors      = 0;

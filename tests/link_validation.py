@@ -23,7 +23,7 @@ from typing import Iterable, Optional
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 REPORT_DIR = REPO_ROOT / "reports"
 
-FRAG_DATA = 123
+FRAG_DATA = 114
 IP_HDR_ICMP = 28
 IP_HDR_UDP = 28
 

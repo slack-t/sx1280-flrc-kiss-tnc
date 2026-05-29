@@ -13,34 +13,34 @@ setup with both nodes flashed from the same commit.
 Use the quiet bridge mode for benchmark runs:
 
 ```sh
-python3 pi-daemon/kiss_tun.py --port /dev/ttyACM0 --addr 10.0.0.1/30 --mtu 246 --quiet
+python3 pi-daemon/kiss_tun.py --port /dev/ttyACM0 --addr 10.0.0.1/30 --mtu 228 --quiet
 ```
 
 Equivalent Rust bridge command:
 
 ```sh
-pi-daemon-rust/target/release/kiss-tun-rs --port /dev/ttyACM0 --addr 10.0.0.1/30 --mtu 246 --quiet
+pi-daemon-rust/target/release/kiss-tun-rs --port /dev/ttyACM0 --addr 10.0.0.1/30 --mtu 228 --quiet
 ```
 
 On the peer, use the matching address:
 
 ```sh
-python3 pi-daemon/kiss_tun.py --port /dev/ttyACM0 --addr 10.0.0.2/30 --mtu 246 --quiet
+python3 pi-daemon/kiss_tun.py --port /dev/ttyACM0 --addr 10.0.0.2/30 --mtu 228 --quiet
 ```
 
 Equivalent Rust peer command:
 
 ```sh
-pi-daemon-rust/target/release/kiss-tun-rs --port /dev/ttyACM0 --addr 10.0.0.2/30 --mtu 246 --quiet
+pi-daemon-rust/target/release/kiss-tun-rs --port /dev/ttyACM0 --addr 10.0.0.2/30 --mtu 228 --quiet
 ```
 
 Recommended host queue settings for the validation run:
 
 ```sh
-sudo ip link set dev tun0 mtu 246
+sudo ip link set dev tun0 mtu 228
 sudo ip link set dev tun0 txqueuelen 10
 sudo tc qdisc replace dev tun0 root fq_codel
-sudo iptables -t mangle -A OUTPUT -o tun0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 206
+sudo iptables -t mangle -A OUTPUT -o tun0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 188
 ```
 
 For diagnostic runs only, add `--debug-ip` and remove `--quiet`. Both the
@@ -50,13 +50,13 @@ For timing correlation without terminal logging, keep `--quiet` and add
 `--trace-file`:
 
 ```sh
-python pi-daemon/kiss_tun.py --port /dev/ttyACM0 --addr 10.0.0.1/30 --mtu 123 --quiet --trace-file reports/node_a_trace.tsv
+python pi-daemon/kiss_tun.py --port /dev/ttyACM0 --addr 10.0.0.1/30 --mtu 114 --quiet --trace-file reports/node_a_trace.tsv
 ```
 
 Rust equivalent:
 
 ```sh
-pi-daemon-rust/target/release/kiss-tun-rs --port /dev/ttyACM0 --addr 10.0.0.1/30 --mtu 123 --quiet --trace-file reports/node_a_trace.tsv
+pi-daemon-rust/target/release/kiss-tun-rs --port /dev/ttyACM0 --addr 10.0.0.1/30 --mtu 114 --quiet --trace-file reports/node_a_trace.tsv
 ```
 
 Trace files are tab-separated rows:
@@ -80,30 +80,30 @@ iperf3 -s
 Useful variants:
 
 ```sh
-python3 tests/link_validation.py 10.0.0.2 --mtu 246
+python3 tests/link_validation.py 10.0.0.2 --mtu 228
 python3 tests/link_validation.py 10.0.0.2 --skip-iperf
 python3 tests/link_validation.py 10.0.0.2 --ping-count 20 --skip-conformance
-python3 tests/link_validation.py 10.0.0.2 --mtu 492 --ping-sizes 56,95,157,218,280,341,403,464
+python3 tests/link_validation.py 10.0.0.2 --mtu 456 --ping-sizes 56,86,143,200,257,314,371,428
 ```
 
 Reports are written to `reports/link_validation_<timestamp>.md`.
 
 ## Packet Size Reference
 
-The current radio fragment payload is `123` bytes.
+The current radio fragment payload is `114` bytes.
 
 | Fragment count | Max IP size | Ping `-s` | UDP payload `iperf3 -l` |
 | --- | ---: | ---: | ---: |
-| 1F | 123 | 95 | 95 |
-| 2F | 246 | 218 | 218 |
-| 3F | 369 | 341 | 341 |
-| 4F | 492 | 464 | 464 |
+| 1F | 114 | 86 | 86 |
+| 2F | 228 | 200 | 200 |
+| 3F | 342 | 314 | 314 |
+| 4F | 456 | 428 | 428 |
 
 Notes:
 
 - Ping `-s` is ICMP payload. IP size is `-s + 28`.
 - UDP `iperf3 -l` is UDP payload. IP size is `-l + 28`.
-- While the link is being stabilized, production traffic should stay at `MTU 246`
+- While the link is being stabilized, production traffic should stay at `MTU 228`
   unless the `3F` and `4F` tests pass reliably.
 
 ## Phase 1: KISS Conformance
@@ -127,9 +127,9 @@ Run from node A to node B:
 
 ```sh
 ping -c 50 -i 1.0 -s 56 10.0.0.2
-ping -c 50 -i 1.0 -s 95 10.0.0.2
-ping -c 50 -i 1.0 -s 157 10.0.0.2
-ping -c 50 -i 1.0 -s 218 10.0.0.2
+ping -c 50 -i 1.0 -s 86 10.0.0.2
+ping -c 50 -i 1.0 -s 143 10.0.0.2
+ping -c 50 -i 1.0 -s 200 10.0.0.2
 ```
 
 Pass criteria:
@@ -143,10 +143,10 @@ Pass criteria:
 Run after Phase 2 passes:
 
 ```sh
-ping -c 30 -i 1.5 -s 280 10.0.0.2
-ping -c 30 -i 1.5 -s 341 10.0.0.2
-ping -c 30 -i 2.0 -s 403 10.0.0.2
-ping -c 30 -i 2.0 -s 464 10.0.0.2
+ping -c 30 -i 1.5 -s 257 10.0.0.2
+ping -c 30 -i 1.5 -s 314 10.0.0.2
+ping -c 30 -i 2.0 -s 371 10.0.0.2
+ping -c 30 -i 2.0 -s 428 10.0.0.2
 ```
 
 Pass criteria:
@@ -161,19 +161,19 @@ Pass criteria:
 Test `1F` first:
 
 ```sh
-iperf3 -c 10.0.0.2 -u -l 95 -b 8k
-iperf3 -c 10.0.0.2 -u -l 95 -b 16k
-iperf3 -c 10.0.0.2 -u -l 95 -b 24k
-iperf3 -c 10.0.0.2 -u -l 95 -b 32k
+iperf3 -c 10.0.0.2 -u -l 86 -b 8k
+iperf3 -c 10.0.0.2 -u -l 86 -b 16k
+iperf3 -c 10.0.0.2 -u -l 86 -b 24k
+iperf3 -c 10.0.0.2 -u -l 86 -b 32k
 ```
 
 Then test `2F`:
 
 ```sh
-iperf3 -c 10.0.0.2 -u -l 218 -b 8k
-iperf3 -c 10.0.0.2 -u -l 218 -b 16k
-iperf3 -c 10.0.0.2 -u -l 218 -b 24k
-iperf3 -c 10.0.0.2 -u -l 218 -b 32k
+iperf3 -c 10.0.0.2 -u -l 200 -b 8k
+iperf3 -c 10.0.0.2 -u -l 200 -b 16k
+iperf3 -c 10.0.0.2 -u -l 200 -b 24k
+iperf3 -c 10.0.0.2 -u -l 200 -b 32k
 ```
 
 Pass criteria:
@@ -194,7 +194,7 @@ ping -c 60 -i 1.0 -s 56 10.0.0.2
 In another shell:
 
 ```sh
-iperf3 -c 10.0.0.2 -u -l 95 -b 16k
+iperf3 -c 10.0.0.2 -u -l 86 -b 16k
 ```
 
 Pass criteria:
