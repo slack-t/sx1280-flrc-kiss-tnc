@@ -13,7 +13,13 @@ import time
 
 import serial
 
-from kiss_tun import FIRMWARE_PAYLOAD_CAP, KISS_DATA_PORT, KissDecoder, kiss_encode
+from kiss_tun import (
+    FIRMWARE_PAYLOAD_CAP,
+    KISS_DATA_PORT,
+    KissDecoder,
+    kiss_encode,
+    write_kiss_frame,
+)
 
 
 def format_ascii(data: bytes) -> str:
@@ -116,7 +122,7 @@ def main() -> int:
     try:
         if payload is not None:
             frame = kiss_encode(payload)
-            ser.write(frame)
+            write_kiss_frame(ser, frame)
             print_frame("TX", payload, args.ascii)
 
         if args.listen:

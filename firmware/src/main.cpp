@@ -296,6 +296,30 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
         return;
     }
 
+    if (strcasecmp(verb, "STATS") == 0) {
+        auto& sm = StatsManager::instance();
+        sm.lock();
+        Stats snapshot = sm.get();
+        sm.unlock();
+
+        char response[255];
+        snprintf(response, sizeof(response),
+                 "OK rx=%lu rxBytes=%lu arqDone=%lu arqMetaDrop=%lu arqIntDrop=%lu arqCrc=%lu "
+                 "stxZero=%lu stxTimeout=%lu stxEncodeFail=%lu rxQWait=%lu",
+                 snapshot.rxCount,
+                 snapshot.rxBytes,
+                 snapshot.arqFramesCompleted,
+                 snapshot.arqFragmentMetadataDrops,
+                 snapshot.arqReassemblyIntegrityDrops,
+                 snapshot.arqFrameCrcErrors,
+                 snapshot.serialTxZeroWrites,
+                 snapshot.serialTxTimeouts,
+                 snapshot.serialTxEncodeFails,
+                 snapshot.rxQueueWaitCount);
+        sendControlResponse(response);
+        return;
+    }
+
     if (strcasecmp(verb, "DEFAULTS") == 0) {
         ModemConfig next = modemDefaultConfig();
         char error[80];
@@ -1114,6 +1138,7 @@ static void serialRxTask(void*) {
 // Takes opaque payload frames from rxQueue, KISS-encodes, writes to USB CDC.
 static void serialTxTask(void*) {
     // Worst-case KISS encoded size: 2 bytes per payload byte + 3 framing bytes
+    static constexpr size_t SERIAL_TX_CHUNK = 64;
     static uint8_t encBuf[TNC_PAYLOAD_MAX_LEN * 2 + 3];
     PayloadFrame frame;
     for (;;) {
@@ -1128,28 +1153,33 @@ static void serialTxTask(void*) {
             continue;
         }
         size_t offset = 0;
-        uint32_t retry_start_ms = 0;
-        bool in_retry = false;
+        uint32_t stall_report_ms = 0;
 
         while (offset < encLen) {
-            size_t written = Serial.write(encBuf + offset, encLen - offset);
+            const size_t chunk = (encLen - offset > SERIAL_TX_CHUNK)
+                ? SERIAL_TX_CHUNK
+                : (encLen - offset);
+            size_t written = Serial.write(encBuf + offset, chunk);
             if (written > 0) {
                 offset += written;
-                in_retry = false; // Reset retry window on successful write progress
+                stall_report_ms = 0;
+                if (offset < encLen) {
+                    vTaskDelay(1);
+                }
             } else {
                 auto& sm = StatsManager::instance();
                 sm.lock();
                 sm.get().serialTxZeroWrites++;
                 sm.unlock();
-                if (!in_retry) {
-                    retry_start_ms = millis();
-                    in_retry = true;
-                } else if (millis() - retry_start_ms > 500) { // 500 ms timeout
+
+                const uint32_t now_ms = millis();
+                if (stall_report_ms == 0) {
+                    stall_report_ms = now_ms;
+                } else if (now_ms - stall_report_ms > 500) {
                     sm.lock();
                     sm.get().serialTxTimeouts++;
                     sm.unlock();
-                    noteRadioError();
-                    break;
+                    stall_report_ms = now_ms;
                 }
                 // Yield to allow other tasks to run and allow USB CDC buffer to drain
                 TickType_t delay_ticks = pdMS_TO_TICKS(1);
@@ -1164,16 +1194,15 @@ static void serialTxTask(void*) {
 
 // ── Task: Display ─────────────────────────────────────────────────────────────
 static void displayTask(void*) {
-    for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(DISPLAY_REFRESH_MS));
+    vTaskDelay(pdMS_TO_TICKS(DISPLAY_REFRESH_MS));
 
-        auto& sm = StatsManager::instance();
-        sm.lock();
-        Stats snapshot = sm.get();
-        sm.unlock();
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    Stats snapshot = sm.get();
+    sm.unlock();
 
-        display.update(snapshot);
-    }
+    display.update(snapshot);
+    vTaskSuspend(nullptr);
 }
 
 // ── Arduino entry points ──────────────────────────────────────────────────────

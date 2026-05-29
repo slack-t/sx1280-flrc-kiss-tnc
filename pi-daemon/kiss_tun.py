@@ -41,6 +41,9 @@ DEFAULT_MTU = 246
 # Seconds to wait before retrying a lost serial connection
 RECONNECT_DELAY_S = 5
 
+SERIAL_WRITE_CHUNK = 64
+SERIAL_WRITE_GAP_S = 0.001
+
 
 def kiss_encode(payload: bytes) -> bytes:
     """Wrap payload bytes in a KISS data frame (port 0)."""
@@ -58,6 +61,20 @@ def kiss_encode(payload: bytes) -> bytes:
             out.append(b)
     out.append(FEND)
     return bytes(out)
+
+
+def write_kiss_frame(ser: serial.Serial, frame: bytes,
+                     chunk_size: int = SERIAL_WRITE_CHUNK,
+                     gap_s: float = SERIAL_WRITE_GAP_S) -> int:
+    """Write a KISS frame in small chunks to avoid overflowing device CDC RX."""
+    total = 0
+    for offset in range(0, len(frame), chunk_size):
+        chunk = frame[offset:offset + chunk_size]
+        total += ser.write(chunk)
+        ser.flush()
+        if offset + chunk_size < len(frame) and gap_s > 0:
+            time.sleep(gap_s)
+    return total
 
 
 class Direction(enum.Enum):
@@ -234,7 +251,7 @@ def tun_to_radio(tun, ser, mtu: int, stop_event: threading.Event, debug_ip: bool
             log_info(f"[kiss_tun] tun0 -> radio: sending {len(pkt)} bytes", quiet)
             log_packet(Direction.TUN_TO_RADIO, pkt, debug_ip)
             encoded = kiss_encode(pkt)
-            written = ser.write(encoded)
+            written = write_kiss_frame(ser, encoded)
             trace.write("serial_write_done", Direction.TUN_TO_RADIO.value, len(pkt),
                         f"encoded_len={len(encoded)} written={written}")
             # Pacing: A small 5ms delay prevents the host from flooding the USB CDC

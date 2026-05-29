@@ -29,7 +29,13 @@ import time
 
 import serial
 
-from kiss_tun import FIRMWARE_PAYLOAD_CAP, KISS_DATA_PORT, KissDecoder, kiss_encode
+from kiss_tun import (
+    FIRMWARE_PAYLOAD_CAP,
+    KISS_DATA_PORT,
+    KissDecoder,
+    kiss_encode,
+    write_kiss_frame,
+)
 
 # ── Protocol constants ────────────────────────────────────────────────────────
 BENCH_MAGIC    = b"\xBE\xEF\xCA\xFE"
@@ -128,7 +134,7 @@ def run_echo(ser: serial.Serial, verbose: bool) -> None:
                 frame_type, seq, payload_size = parsed
                 if frame_type != BENCH_PING:
                     continue
-                ser.write(kiss_encode(build_pong(payload)))
+                write_kiss_frame(ser, kiss_encode(build_pong(payload)))
                 echoed += 1
                 echoed_bytes += len(payload)
                 if verbose:
@@ -176,7 +182,7 @@ def run_latency(ser: serial.Serial,
         ping_frame = build_ping(seq, payload_size)
 
         t_send = time.monotonic()
-        ser.write(kiss_encode(ping_frame))
+        write_kiss_frame(ser, kiss_encode(ping_frame))
         deadline = t_send + timeout_s
 
         got_pong = False

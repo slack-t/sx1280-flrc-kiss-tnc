@@ -83,15 +83,17 @@ class KissDecoder:
 class ModemClient:
     def __init__(self, port: str, baud: int, timeout: float,
                  boot_wait: float, retries: int):
-        # Open port cleanly without touching DTR/RTS lines after opening
-        # to avoid double resets or toggling ESP32-S3 EN/IO0 pins.
-        self.ser = serial.Serial(
-            port=port,
-            baudrate=baud,
-            timeout=0,
-            rtscts=False,
-            dsrdtr=False
-        )
+        # Hold DTR/RTS low before opening to avoid resetting the ESP32-S3 and
+        # losing volatile diagnostic counters.
+        self.ser = serial.Serial()
+        self.ser.port = port
+        self.ser.baudrate = baud
+        self.ser.timeout = 0
+        self.ser.rtscts = False
+        self.ser.dsrdtr = False
+        self.ser.dtr = False
+        self.ser.rts = False
+        self.ser.open()
         if boot_wait > 0:
             time.sleep(boot_wait)
         self.ser.reset_input_buffer()
@@ -295,6 +297,8 @@ def main():
                         help="Control command retries before failing")
     parser.add_argument("--probe", action="store_true",
                         help="Send GET, print the response, and exit without curses")
+    parser.add_argument("--command", default=None,
+                        help="Send a raw control command, print the response, and exit")
     parser.add_argument("--scan", action="store_true",
                         help="Sweep the 2.4 GHz band and print a channel occupancy chart")
     parser.add_argument("--scan-start", type=float, default=2400.0,
@@ -309,7 +313,9 @@ def main():
 
     client = ModemClient(args.port, args.baud, args.timeout, args.boot_wait, args.retries)
     try:
-        if args.probe:
+        if args.command:
+            print(client.command(args.command))
+        elif args.probe:
             print(client.command("GET"))
         elif args.scan:
             cmd = (f"SCAN start={args.scan_start:.0f} stop={args.scan_stop:.0f}"

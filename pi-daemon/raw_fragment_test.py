@@ -15,7 +15,13 @@ import zlib
 
 import serial
 
-from kiss_tun import FIRMWARE_PAYLOAD_CAP, KISS_DATA_PORT, KissDecoder, kiss_encode
+from kiss_tun import (
+    FIRMWARE_PAYLOAD_CAP,
+    KISS_DATA_PORT,
+    KissDecoder,
+    kiss_encode,
+    write_kiss_frame,
+)
 from raw_kiss import open_serial
 
 
@@ -97,7 +103,7 @@ def run_send(args: argparse.Namespace) -> int:
             for size in sizes:
                 payload = build_payload(seq, size)
                 frame = kiss_encode(payload)
-                written = ser.write(frame)
+                written = write_kiss_frame(ser, frame)
                 sent += 1
                 print(
                     f"TX seq={seq} len={size} frags={fragment_count(size)} "
