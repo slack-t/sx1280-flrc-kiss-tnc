@@ -13,31 +13,31 @@ setup with both nodes flashed from the same commit.
 Use the quiet bridge mode for benchmark runs:
 
 ```sh
-python3 pi-daemon/kiss_tun.py --port /dev/ttyACM0 --addr 10.0.0.1/30 --mtu 228 --quiet
+python3 pi-daemon/kiss_tun.py --port /dev/ttyACM0 --addr 10.0.0.1/30 --mtu 220 --quiet
 ```
 
 Equivalent Rust bridge command:
 
 ```sh
-pi-daemon-rust/target/release/kiss-tun-rs --port /dev/ttyACM0 --addr 10.0.0.1/30 --mtu 228 --quiet
+pi-daemon-rust/target/release/kiss-tun-rs --port /dev/ttyACM0 --addr 10.0.0.1/30 --mtu 220 --quiet
 ```
 
 On the peer, use the matching address:
 
 ```sh
-python3 pi-daemon/kiss_tun.py --port /dev/ttyACM0 --addr 10.0.0.2/30 --mtu 228 --quiet
+python3 pi-daemon/kiss_tun.py --port /dev/ttyACM0 --addr 10.0.0.2/30 --mtu 220 --quiet
 ```
 
 Equivalent Rust peer command:
 
 ```sh
-pi-daemon-rust/target/release/kiss-tun-rs --port /dev/ttyACM0 --addr 10.0.0.2/30 --mtu 228 --quiet
+pi-daemon-rust/target/release/kiss-tun-rs --port /dev/ttyACM0 --addr 10.0.0.2/30 --mtu 220 --quiet
 ```
 
 Recommended host queue settings for the validation run:
 
 ```sh
-sudo ip link set dev tun0 mtu 228
+sudo ip link set dev tun0 mtu 220
 sudo ip link set dev tun0 txqueuelen 10
 sudo tc qdisc replace dev tun0 root fq_codel
 sudo iptables -t mangle -A OUTPUT -o tun0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 188
@@ -80,7 +80,7 @@ iperf3 -s
 Useful variants:
 
 ```sh
-python3 tests/link_validation.py 10.0.0.2 --mtu 228
+python3 tests/link_validation.py 10.0.0.2 --mtu 220
 python3 tests/link_validation.py 10.0.0.2 --skip-iperf
 python3 tests/link_validation.py 10.0.0.2 --ping-count 20 --skip-conformance
 python3 tests/link_validation.py 10.0.0.2 --mtu 456 --ping-sizes 56,86,143,200,257,314,371,428
@@ -127,9 +127,9 @@ Run from node A to node B:
 
 ```sh
 ping -c 50 -i 1.0 -s 56 10.0.0.2
-ping -c 50 -i 1.0 -s 86 10.0.0.2
+ping -c 50 -i 1.0 -s 78 10.0.0.2
 ping -c 50 -i 1.0 -s 143 10.0.0.2
-ping -c 50 -i 1.0 -s 200 10.0.0.2
+ping -c 50 -i 1.0 -s 192 10.0.0.2
 ```
 
 Pass criteria:
@@ -143,10 +143,10 @@ Pass criteria:
 Run after Phase 2 passes:
 
 ```sh
-ping -c 30 -i 1.5 -s 257 10.0.0.2
-ping -c 30 -i 1.5 -s 314 10.0.0.2
-ping -c 30 -i 2.0 -s 371 10.0.0.2
-ping -c 30 -i 2.0 -s 428 10.0.0.2
+ping -c 30 -i 1.5 -s 249 10.0.0.2
+ping -c 30 -i 1.5 -s 306 10.0.0.2
+ping -c 30 -i 2.0 -s 363 10.0.0.2
+ping -c 30 -i 2.0 -s 420 10.0.0.2
 ```
 
 Pass criteria:

@@ -1,7 +1,7 @@
 use crc32fast::Hasher;
 
 const SERIAL_INTEGRITY_MAGIC: u16 = 0x8AC1;
-const SERIAL_INTEGRITY_HDR_LEN: usize = 8;
+pub const SERIAL_INTEGRITY_HDR_LEN: usize = 8;
 
 pub fn wrap_payload(payload: &[u8], out: &mut Vec<u8>) {
     let mut hasher = Hasher::new();

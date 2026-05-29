@@ -31,7 +31,8 @@ VERSION = 1
 HEADER = struct.Struct(">4sBIHI")
 HEADER_LEN = HEADER.size
 FRAG_DATA = 114
-DEFAULT_SIZES = "113,114,115,227,228,229,341,342,343,455,456,457"
+SERIAL_HDR_LEN = serial_integrity.SERIAL_INTEGRITY_HDR_LEN
+DEFAULT_SIZES = "105,106,107,219,220,221,333,334,335,447,448,449"
 
 
 def parse_sizes(text: str) -> list[int]:
@@ -52,7 +53,7 @@ def parse_sizes(text: str) -> list[int]:
 
 
 def fragment_count(size: int) -> int:
-    return (size + FRAG_DATA - 1) // FRAG_DATA
+    return (size + SERIAL_HDR_LEN + FRAG_DATA - 1) // FRAG_DATA
 
 
 def pattern(seq: int, body_len: int) -> bytes:

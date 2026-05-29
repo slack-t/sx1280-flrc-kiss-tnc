@@ -38,7 +38,7 @@ FIRMWARE_PAYLOAD_CAP = 1016
 # Conservative default for the optional IP adapter. This stays below the
 # firmware payload cap and avoids pushing normal IP traffic straight into the
 # larger multi-fragment regimes by default.
-DEFAULT_MTU = 238
+DEFAULT_MTU = 220
 
 # Seconds to wait before retrying a lost serial connection
 RECONNECT_DELAY_S = 5
@@ -269,7 +269,7 @@ def tun_to_radio(tun, ser, mtu: int, stop_event: threading.Event, debug_ip: bool
 def radio_to_tun(tun, ser, mtu: int, stop_event: threading.Event, debug_ip: bool,
                  quiet: bool, trace: TraceLogger):
     """Read KISS data frames from serial and inject IP packets into tun0."""
-    decoder = KissDecoder(mtu)
+    decoder = KissDecoder(mtu + serial_integrity.SERIAL_INTEGRITY_HDR_LEN)
     while not stop_event.is_set():
         try:
             waiting = ser.in_waiting

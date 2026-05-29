@@ -32,7 +32,7 @@ struct Args {
 
     #[arg(
         long,
-        default_value_t = 238,
+        default_value_t = 220,
         help = "Adapter MTU (must be <= firmware payload cap 1016)"
     )]
     mtu: u16,
@@ -340,7 +340,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 // Thread 2: Radio -> TUN (reads from Serial, writes to TUN)
                 let t2 = thread::spawn(move || {
-                    let mut decoder = kiss::KissDecoder::new(mtu as usize);
+                    let mut decoder = kiss::KissDecoder::new(mtu as usize + serial_integrity::SERIAL_INTEGRITY_HDR_LEN);
                     let mut read_buf = [0u8; 1024];
                     let mut decoded_buf = Vec::new();
 

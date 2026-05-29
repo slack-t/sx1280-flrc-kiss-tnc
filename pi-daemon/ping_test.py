@@ -186,7 +186,7 @@ def main() -> None:
                     help="Comma-separated -s values; default covers 1–4 frags")
     args = ap.parse_args()
 
-    max_s = FRAG_DATA * 4 - IP_HDR  # 428
+    max_s = FRAG_DATA * 4 - SERIAL_HDR - IP_HDR  # 420
 
     if args.sizes:
         sizes = sorted(set(int(s.strip()) for s in args.sizes.split(',')))
@@ -194,14 +194,14 @@ def main() -> None:
         # Two sizes per fragment count: mid-range and ceiling.
         # This reveals whether loss is flat within a fragment count or rising.
         sizes = [
-            56,    # 84 B IP  — 1F mid   (standard ping default)
-            95,    # 123 B IP — 1F max
-            157,   # 185 B IP — 2F mid
-            218,   # 246 B IP — 2F max
-            280,   # 308 B IP — 3F mid
-            341,   # 369 B IP — 3F max
-            403,   # 431 B IP — 4F mid
-            max_s, # 492 B IP — 4F max   (MTU ceiling)
+            56,    # 92 B radio  — 1F mid   (standard ping default)
+            78,    # 114 B radio — 1F max
+            135,   # 171 B radio — 2F mid
+            192,   # 228 B radio — 2F max
+            249,   # 285 B radio — 3F mid
+            306,   # 342 B radio — 3F max
+            363,   # 399 B radio — 4F mid
+            max_s, # 456 B radio — 4F max   (MTU ceiling)
         ]
 
     sizes = [s for s in sizes if 1 <= s <= max_s]
