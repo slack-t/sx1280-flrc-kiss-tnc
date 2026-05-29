@@ -642,6 +642,12 @@ static void radioRxTask(void*) {
                 const uint32_t now_ms = millis();
                 if (now_ms >= ra.ack_due_ms) {
                     if (ra.isComplete() && !isReassemblyValid(ra)) {
+                        completed.seq         = ra.seq;
+                        completed.total_frags = ra.total_frags;
+                        completed.frame_len   = ra.frame_len;
+                        completed.frame_crc32 = ra.frame_crc32;
+                        completed.ack_mask    = 0;  // Explicit fatal NACK for this completed sequence.
+                        completed.tick_ms     = millis();
                         ra.reset();
                         continue;
                     }
@@ -665,6 +671,12 @@ static void radioRxTask(void*) {
         if (got == pdFALSE) {
             if (ra.seq != FRAMING_SEQ_UNSET && ra.ack_pending) {
                 if (ra.isComplete() && !isReassemblyValid(ra)) {
+                    completed.seq         = ra.seq;
+                    completed.total_frags = ra.total_frags;
+                    completed.frame_len   = ra.frame_len;
+                    completed.frame_crc32 = ra.frame_crc32;
+                    completed.ack_mask    = 0;
+                    completed.tick_ms     = millis();
                     ra.reset();
                     continue;
                 }
@@ -793,32 +805,37 @@ static void radioRxTask(void*) {
         const bool    round_end     = dataHdr.round_end;
         const uint32_t now_ms       = millis();
 
-        if (completed.seq == seq &&
-            completed.total_frags == total_frags &&
-            completed.frame_len == frame_len &&
-            completed.frame_crc32 == frame_crc32 &&
-            (now_ms - completed.tick_ms) <= RADIO_DUP_CACHE_MS) {
-            ARQ_LOG("[ARQ RX:DUP seq=%04x tot=%u mask=%08lx]\n",
-                    seq, total_frags, static_cast<unsigned long>(completed.ack_mask));
-            // Re-ACK without re-delivering. Use AckFrame + Packet directly to
-            // avoid a large Reassembler on the task stack.
-            AckFrame dupAck;
-            dupAck.seq           = completed.seq;
-            dupAck.total_frags   = completed.total_frags;
-            dupAck.window_base   = 0;
-            dupAck.received_mask = completed.ack_mask;
-            Packet ackPkt;
-            framingBuildAckPacket(ackPkt, dupAck);
-            auto& sm = StatsManager::instance();
-            sm.lock();
-            sm.get().arqDuplicateSuppressed++;
-            sm.get().arqAckTxCount++;
-            sm.unlock();
-            if (radio.transmit(ackPkt, true) != RADIOLIB_ERR_NONE) {
+        if (completed.seq == seq && (now_ms - completed.tick_ms) <= RADIO_DUP_CACHE_MS) {
+            if (completed.total_frags == total_frags &&
+                completed.frame_len == frame_len &&
+                completed.frame_crc32 == frame_crc32) {
+                ARQ_LOG("[ARQ RX:DUP seq=%04x tot=%u mask=%08lx]\n",
+                        seq, total_frags, static_cast<unsigned long>(completed.ack_mask));
+                // Re-ACK without re-delivering. Use AckFrame + Packet directly to
+                // avoid a large Reassembler on the task stack.
+                AckFrame dupAck;
+                dupAck.seq           = completed.seq;
+                dupAck.total_frags   = completed.total_frags;
+                dupAck.window_base   = 0;
+                dupAck.received_mask = completed.ack_mask;
+                Packet ackPkt;
+                framingBuildAckPacket(ackPkt, dupAck);
+                auto& sm = StatsManager::instance();
                 sm.lock();
-                sm.get().arqAckTxErrors++;
+                sm.get().arqDuplicateSuppressed++;
+                sm.get().arqAckTxCount++;
                 sm.unlock();
-                noteRadioTxError();
+                if (radio.transmit(ackPkt, true) != RADIOLIB_ERR_NONE) {
+                    sm.lock();
+                    sm.get().arqAckTxErrors++;
+                    sm.unlock();
+                    noteRadioTxError();
+                }
+            } else {
+                auto& sm = StatsManager::instance();
+                sm.lock();
+                sm.get().arqFragmentMetadataDrops++;
+                sm.unlock();
             }
             continue;
         }
@@ -958,6 +975,7 @@ static void radioTxTask(void*) {
             ARQ_LOG("[ARQ TX:ROUND seq=%04x tot=%u round=%u pending=%08lx]\n",
                     seq, total_frags, round, static_cast<unsigned long>(pending_mask));
             uint32_t sent_mask = 0;
+            bool fatal_nack = false;
             for (uint8_t idx = 0; idx < total_frags; idx++) {
                 const uint32_t bit = 1u << idx;
                 if ((pending_mask & bit) == 0) {
@@ -1023,6 +1041,13 @@ static void radioTxTask(void*) {
                 }
                 const uint32_t expected_mask = framingExpectedMask(total_frags);
                 const uint32_t ack_mask = ack.received_mask & expected_mask;
+                if (ack_mask == 0) {
+                    fatal_nack = true;
+                    got_ack = true;
+                    ARQ_LOG("[ARQ TX:NACK seq=%04x tot=%u round=%u pending=%08lx]\n",
+                            seq, total_frags, round, static_cast<unsigned long>(pending_mask));
+                    break;
+                }
                 ARQ_LOG("[ARQ TX:ACK seq=%04x tot=%u ack_mask=%08lx pend=%08lx->%08lx]\n",
                         seq, total_frags, static_cast<unsigned long>(ack_mask),
                         static_cast<unsigned long>(pending_mask),
@@ -1039,6 +1064,10 @@ static void radioTxTask(void*) {
                 sm.unlock();
                 ARQ_LOG("[ARQ TX:TIMEOUT seq=%04x tot=%u round=%u pending=%08lx]\n",
                         seq, total_frags, round, static_cast<unsigned long>(pending_mask));
+            }
+
+            if (fatal_nack) {
+                break;
             }
 
             if (pending_mask == 0) {

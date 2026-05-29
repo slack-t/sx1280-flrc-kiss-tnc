@@ -18,7 +18,7 @@ Wire protocol (KISS data port 0):
 
 Max bench payload:
   Native transport  116 bytes  (125 byte FLRC packet - 9 byte header)
-  Generic/ARQ       1015 bytes (1024 byte firmware cap - 9 byte header)
+  Generic/ARQ       1007 bytes (1016 byte wrapped payload cap - 9 byte header)
 """
 
 import argparse
@@ -28,6 +28,7 @@ import sys
 import time
 
 import serial
+import serial_integrity
 
 from kiss_tun import (
     FIRMWARE_PAYLOAD_CAP,
@@ -94,13 +95,18 @@ def parse_bench_frame(data: bytes):
 
 # ── KISS read helpers ─────────────────────────────────────────────────────────
 
-def read_payloads(ser: serial.Serial, decoder: KissDecoder, deadline: float):
+def read_payloads(ser: serial.Serial, decoder: KissDecoder, deadline: float, no_wrap: bool):
     """Yield KISS data-port payloads until deadline."""
     while time.monotonic() < deadline:
         waiting = ser.in_waiting
         if waiting:
             for port, payload in decoder.feed(ser.read(waiting)):
                 if port == KISS_DATA_PORT:
+                    if not no_wrap:
+                        try:
+                            payload = serial_integrity.unwrap_payload(payload)
+                        except ValueError:
+                            continue
                     yield payload
         else:
             time.sleep(0.001)
@@ -108,8 +114,9 @@ def read_payloads(ser: serial.Serial, decoder: KissDecoder, deadline: float):
 
 # ── Echo mode ─────────────────────────────────────────────────────────────────
 
-def run_echo(ser: serial.Serial, verbose: bool) -> None:
-    decoder = KissDecoder(FIRMWARE_PAYLOAD_CAP)
+def run_echo(ser: serial.Serial, no_wrap: bool, verbose: bool) -> None:
+    cap = FIRMWARE_PAYLOAD_CAP if no_wrap else FIRMWARE_PAYLOAD_CAP + serial_integrity.SERIAL_INTEGRITY_HDR_LEN
+    decoder = KissDecoder(cap)
     echoed = 0
     echoed_bytes = 0
     foreign = 0
@@ -124,6 +131,11 @@ def run_echo(ser: serial.Serial, verbose: bool) -> None:
             for port, payload in decoder.feed(ser.read(waiting)):
                 if port != KISS_DATA_PORT:
                     continue
+                if not no_wrap:
+                    try:
+                        payload = serial_integrity.unwrap_payload(payload)
+                    except ValueError:
+                        continue
                 parsed = parse_bench_frame(payload)
                 if parsed is None:
                     foreign += 1
@@ -134,7 +146,10 @@ def run_echo(ser: serial.Serial, verbose: bool) -> None:
                 frame_type, seq, payload_size = parsed
                 if frame_type != BENCH_PING:
                     continue
-                write_kiss_frame(ser, kiss_encode(build_pong(payload)))
+                pong_payload = build_pong(payload)
+                if not no_wrap:
+                    pong_payload = serial_integrity.wrap_payload(pong_payload)
+                write_kiss_frame(ser, kiss_encode(pong_payload))
                 echoed += 1
                 echoed_bytes += len(payload)
                 if verbose:
@@ -155,6 +170,7 @@ def run_latency(ser: serial.Serial,
                 count: int,
                 timeout_s: float,
                 gap_ms: int,
+                no_wrap: bool,
                 verbose: bool) -> dict:
     """
     Send `count` PINGs of `payload_size` bytes sequentially, wait for each PONG.
@@ -169,7 +185,8 @@ def run_latency(ser: serial.Serial,
               f"use generic/ARQ transport or reduce size", flush=True)
         _warned_native[0] = True
 
-    decoder = KissDecoder(FIRMWARE_PAYLOAD_CAP)
+    cap = FIRMWARE_PAYLOAD_CAP if no_wrap else FIRMWARE_PAYLOAD_CAP + serial_integrity.SERIAL_INTEGRITY_HDR_LEN
+    decoder = KissDecoder(cap)
     rtts: list[float] = []
     lost = 0
     seq = 0
@@ -180,13 +197,15 @@ def run_latency(ser: serial.Serial,
     for i in range(count):
         seq = (seq + 1) & 0xFFFF
         ping_frame = build_ping(seq, payload_size)
+        if not no_wrap:
+            ping_frame = serial_integrity.wrap_payload(ping_frame)
 
         t_send = time.monotonic()
         write_kiss_frame(ser, kiss_encode(ping_frame))
         deadline = t_send + timeout_s
 
         got_pong = False
-        for payload in read_payloads(ser, decoder, deadline):
+        for payload in read_payloads(ser, decoder, deadline, no_wrap):
             parsed = parse_bench_frame(payload)
             if parsed is None:
                 continue
@@ -267,7 +286,8 @@ def run_sweep(ser: serial.Serial,
               sizes: list[int],
               count: int,
               timeout_s: float,
-              gap_ms: int) -> None:
+              gap_ms: int,
+              no_wrap: bool) -> None:
     hdr = f"{'size':>6}  {'delivery':>9}  {'rtt_min':>8}  {'rtt_mean':>9}  {'rtt_p95':>8}  {'eff_kbps':>9}"
     print(hdr)
     print("-" * len(hdr))
@@ -276,7 +296,7 @@ def run_sweep(ser: serial.Serial,
         print(f"  size={size}B ...", end="", flush=True)
         # Flush stale bytes between runs.
         _ = ser.read(ser.in_waiting)
-        r = run_latency(ser, size, count, timeout_s, gap_ms, verbose=False)
+        r = run_latency(ser, size, count, timeout_s, gap_ms, no_wrap, verbose=False)
         rtts      = r["rtts"]
         delivered = r["delivered"]
         pct       = delivered / count * 100 if count else 0.0
@@ -338,6 +358,8 @@ def main() -> int:
     parser.add_argument("--sweep-sizes", default=None,
                         help="Comma-separated payload sizes for --sweep "
                              "(default: 16,32,48,64,96,116)")
+    parser.add_argument("--no-wrap", action="store_true",
+                        help="Do not wrap/unwrap payloads in the serial integrity header (for NATIVE mode)")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Print one line per frame instead of a progress bar")
 
@@ -353,7 +375,7 @@ def main() -> int:
 
     try:
         if args.echo:
-            run_echo(ser, verbose=args.verbose)
+            run_echo(ser, args.no_wrap, verbose=args.verbose)
 
         elif args.sweep:
             if args.sweep_sizes:
@@ -371,13 +393,13 @@ def main() -> int:
 
             print(f"Sweep: {len(sizes)} sizes, count={args.count}/size, "
                   f"timeout={args.timeout}s, gap={args.gap_ms}ms\n")
-            run_sweep(ser, sizes, args.count, args.timeout, args.gap_ms)
+            run_sweep(ser, sizes, args.count, args.timeout, args.gap_ms, args.no_wrap)
 
         else:
             print(f"Latency test: port={args.port}  size={args.size}B  "
                   f"count={args.count}  timeout={args.timeout}s  gap={args.gap_ms}ms\n")
             r = run_latency(ser, args.size, args.count, args.timeout,
-                            args.gap_ms, verbose=args.verbose)
+                            args.gap_ms, args.no_wrap, verbose=args.verbose)
             print_latency_result(r)
 
     except KeyboardInterrupt:

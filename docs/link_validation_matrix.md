@@ -40,7 +40,7 @@ Recommended host queue settings for the validation run:
 sudo ip link set dev tun0 mtu 220
 sudo ip link set dev tun0 txqueuelen 10
 sudo tc qdisc replace dev tun0 root fq_codel
-sudo iptables -t mangle -A OUTPUT -o tun0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 188
+sudo iptables -t mangle -A OUTPUT -o tun0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 180
 ```
 
 For diagnostic runs only, add `--debug-ip` and remove `--quiet`. Both the
@@ -83,7 +83,7 @@ Useful variants:
 python3 tests/link_validation.py 10.0.0.2 --mtu 220
 python3 tests/link_validation.py 10.0.0.2 --skip-iperf
 python3 tests/link_validation.py 10.0.0.2 --ping-count 20 --skip-conformance
-python3 tests/link_validation.py 10.0.0.2 --mtu 456 --ping-sizes 56,86,143,200,257,314,371,428
+python3 tests/link_validation.py 10.0.0.2 --mtu 448 --ping-sizes 56,78,135,192,249,306,363,420
 ```
 
 Reports are written to `reports/link_validation_<timestamp>.md`.
@@ -128,7 +128,7 @@ Run from node A to node B:
 ```sh
 ping -c 50 -i 1.0 -s 56 10.0.0.2
 ping -c 50 -i 1.0 -s 78 10.0.0.2
-ping -c 50 -i 1.0 -s 143 10.0.0.2
+ping -c 50 -i 1.0 -s 135 10.0.0.2
 ping -c 50 -i 1.0 -s 192 10.0.0.2
 ```
 
@@ -161,19 +161,19 @@ Pass criteria:
 Test `1F` first:
 
 ```sh
-iperf3 -c 10.0.0.2 -u -l 86 -b 8k
-iperf3 -c 10.0.0.2 -u -l 86 -b 16k
-iperf3 -c 10.0.0.2 -u -l 86 -b 24k
-iperf3 -c 10.0.0.2 -u -l 86 -b 32k
+iperf3 -c 10.0.0.2 -u -l 78 -b 8k
+iperf3 -c 10.0.0.2 -u -l 78 -b 16k
+iperf3 -c 10.0.0.2 -u -l 78 -b 24k
+iperf3 -c 10.0.0.2 -u -l 78 -b 32k
 ```
 
 Then test `2F`:
 
 ```sh
-iperf3 -c 10.0.0.2 -u -l 200 -b 8k
-iperf3 -c 10.0.0.2 -u -l 200 -b 16k
-iperf3 -c 10.0.0.2 -u -l 200 -b 24k
-iperf3 -c 10.0.0.2 -u -l 200 -b 32k
+iperf3 -c 10.0.0.2 -u -l 192 -b 8k
+iperf3 -c 10.0.0.2 -u -l 192 -b 16k
+iperf3 -c 10.0.0.2 -u -l 192 -b 24k
+iperf3 -c 10.0.0.2 -u -l 192 -b 32k
 ```
 
 Pass criteria:
@@ -194,7 +194,7 @@ ping -c 60 -i 1.0 -s 56 10.0.0.2
 In another shell:
 
 ```sh
-iperf3 -c 10.0.0.2 -u -l 86 -b 16k
+iperf3 -c 10.0.0.2 -u -l 78 -b 16k
 ```
 
 Pass criteria:

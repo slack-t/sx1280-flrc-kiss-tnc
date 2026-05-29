@@ -127,7 +127,8 @@ def main() -> int:
     if args.boot_wait > 0:
         time.sleep(args.boot_wait)
 
-    decoder = KissDecoder(FIRMWARE_PAYLOAD_CAP)
+    cap = FIRMWARE_PAYLOAD_CAP if args.no_wrap else FIRMWARE_PAYLOAD_CAP + serial_integrity.SERIAL_INTEGRITY_HDR_LEN
+    decoder = KissDecoder(cap)
     decoder.no_wrap = args.no_wrap
     try:
         if payload is not None:

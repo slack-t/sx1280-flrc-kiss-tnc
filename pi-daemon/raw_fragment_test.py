@@ -137,7 +137,7 @@ def run_listen(args: argparse.Namespace) -> int:
     if args.boot_wait > 0:
         time.sleep(args.boot_wait)
 
-    decoder = KissDecoder(FIRMWARE_PAYLOAD_CAP)
+    decoder = KissDecoder(FIRMWARE_PAYLOAD_CAP + serial_integrity.SERIAL_INTEGRITY_HDR_LEN)
     by_size: dict[int, int] = collections.defaultdict(int)
     bad_reasons: dict[str, int] = collections.defaultdict(int)
     seen: set[int] = set()

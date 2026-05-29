@@ -59,7 +59,7 @@ class PingResult:
 
     @property
     def frags(self) -> int:
-        return max(1, (self.ip_len + FRAG_DATA - 1) // FRAG_DATA)
+        return max(1, (self.ip_len + 8 + FRAG_DATA - 1) // FRAG_DATA)
 
     @property
     def loss_pct(self) -> float:
@@ -96,7 +96,7 @@ class IperfResult:
 
     @property
     def frags(self) -> int:
-        return max(1, (self.ip_len + FRAG_DATA - 1) // FRAG_DATA)
+        return max(1, (self.ip_len + 8 + FRAG_DATA - 1) // FRAG_DATA)
 
     @property
     def ok(self) -> bool:
@@ -319,9 +319,9 @@ def parse_str_list(value: str) -> list[str]:
 
 
 def default_ping_sizes(mtu_profile: int) -> list[int]:
-    safe = [56, 95, 157, 218]
-    boundary = [280, 341, 403, 464]
-    return safe if mtu_profile <= 246 else safe + boundary
+    safe = [56, 78, 135, 192]
+    boundary = [249, 306, 363, 420]
+    return safe if mtu_profile <= 238 else safe + boundary
 
 
 def main() -> int:
@@ -329,8 +329,8 @@ def main() -> int:
         description="Run the FLRC link validation matrix. For UDP tests, run 'iperf3 -s' on the peer first."
     )
     parser.add_argument("target", help="Peer tunnel IP address, e.g. 10.0.0.2")
-    parser.add_argument("--mtu", type=int, default=238,
-                        help="Operational MTU profile used for this run (default: 238)")
+    parser.add_argument("--mtu", type=int, default=220,
+                        help="Operational MTU profile used for this run (default: 220)")
     parser.add_argument("--skip-conformance", action="store_true",
                         help="Skip local Python/Rust KISS tests")
     parser.add_argument("--skip-ping", action="store_true",
@@ -345,8 +345,8 @@ def main() -> int:
                         help="Comma-separated ping -s values")
     parser.add_argument("--iperf-duration", type=int, default=10,
                         help="iperf3 UDP test duration in seconds (default: 10)")
-    parser.add_argument("--iperf-lengths", default="95,218",
-                        help="Comma-separated UDP payload lengths (default: 95,218)")
+    parser.add_argument("--iperf-lengths", default="78,192",
+                        help="Comma-separated UDP payload lengths (default: 78,192)")
     parser.add_argument("--bitrates", default="8k,16k,24k,32k",
                         help="Comma-separated UDP bitrates (default: 8k,16k,24k,32k)")
     parser.add_argument("--output", default=None,

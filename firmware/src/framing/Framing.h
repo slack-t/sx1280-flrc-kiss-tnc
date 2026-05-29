@@ -140,7 +140,7 @@ inline bool framingParseDataHeader(const Packet& pkt, DataFrameHeader& header) {
     header.frag_index  = pkt.data[4];
     header.total_frags = pkt.data[5];
     header.payload_len = pkt.data[6];
-    header.frame_len   = static_cast<uint16_t>((pkt.data[7] << 8) | pkt.data[8]);
+    header.frame_len   = static_cast<uint16_t>((static_cast<uint16_t>(pkt.data[7]) << 8) | pkt.data[8]);
     header.frame_crc32 = (static_cast<uint32_t>(pkt.data[9]) << 24) |
                          (static_cast<uint32_t>(pkt.data[10]) << 16) |
                          (static_cast<uint32_t>(pkt.data[11]) << 8) |
