@@ -606,6 +606,14 @@ void test_control_reject_wrong_version() {
     TEST_ASSERT_FALSE(framingParseControl(pkt, in));
 }
 
+void test_control_reject_unknown_type() {
+    Packet pkt;
+    framingBuildControlPacket(pkt, ControlFrame{});
+    pkt.data[1] = 0x99;
+    ControlFrame in;
+    TEST_ASSERT_FALSE(framingParseControl(pkt, in));
+}
+
 void test_control_reject_data_packet_as_control() {
     // A DATA packet must not parse as CONTROL
     Packet pkt;
@@ -680,6 +688,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_control_all_types_roundtrip);
     RUN_TEST(test_control_reject_short_packet);
     RUN_TEST(test_control_reject_wrong_version);
+    RUN_TEST(test_control_reject_unknown_type);
     RUN_TEST(test_control_reject_data_packet_as_control);
     RUN_TEST(test_control_not_parsed_as_data);
     RUN_TEST(test_control_not_parsed_as_ack);

@@ -30,7 +30,24 @@ Purpose:
 This phase addresses the separate half-duplex ownership problem seen with ping/TUN and other
 bidirectional traffic.
 
+## Phase 3: Idle Heartbeat Control
+
+Read: `docs/idle_heartbeat_control_plan.md`
+
+Purpose:
+
+- Add link-layer `HEARTBEAT` and `DATA_PENDING` control packets.
+- Prime the full bidirectional TX/RX/ACK turnaround path before the first multi-fragment ARQ burst
+  after idle.
+- Avoid using real host payloads as accidental link primers.
+- Keep control traffic below the KISS host interface.
+
+This phase addresses the confirmed failure mode where the first multi-fragment frame after idle is
+unreliable unless a small one-fragment payload is sent first.
+
 ## Recommended Order
 
 Implement ARQ Integrity v2 first. It fixes a correctness bug that can corrupt one-way raw payload
-delivery. Implement MAC Arbiter v2 after one-way fragmented delivery is clean and measurable.
+delivery. Implement Idle Heartbeat Control next if large-only fragmented tests still need a manual
+small primer. Implement MAC Arbiter v2 when bidirectional DATA/ACK contention becomes the dominant
+remaining problem.

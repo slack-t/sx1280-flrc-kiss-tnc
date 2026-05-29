@@ -172,6 +172,14 @@ static void noteQueueDrop() {
     sm.unlock();
 }
 
+static void noteControlQueueDrop() {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    sm.get().controlQueueDrops++;
+    sm.unlock();
+    noteQueueDrop();
+}
+
 static void noteIdentityReset() {
     auto& sm = StatsManager::instance();
     sm.lock();
@@ -375,7 +383,7 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
                  "OK rx=%lu rxBytes=%lu arqDone=%lu arqMetaDrop=%lu arqIntDrop=%lu arqCrc=%lu "
                  "stxZero=%lu stxTimeout=%lu stxEncodeFail=%lu rxQWait=%lu "
                  "linkReady=%u linkState=%s linkAgeMs=%lu "
-                 "hbTx=%lu hbAckRx=%lu dpTx=%lu drRx=%lu primerTO=%lu",
+                 "hbTx=%lu hbAckRx=%lu dpTx=%lu drRx=%lu primerTO=%lu cqDrop=%lu",
                  snapshot.rxCount,
                  snapshot.rxBytes,
                  snapshot.arqFramesCompleted,
@@ -393,7 +401,8 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
                  snapshot.controlHeartbeatAckRx,
                  snapshot.controlDataPendingTx,
                  snapshot.controlDataReadyRx,
-                 snapshot.controlPrimerTimeouts);
+                 snapshot.controlPrimerTimeouts,
+                 snapshot.controlQueueDrops);
         sendControlResponse(response);
         return;
     }
@@ -819,14 +828,15 @@ static void radioRxTask(void*) {
                 ack.seq  = ctrl.seq;
                 Packet ackPkt;
                 framingBuildControlPacket(ackPkt, ack);
-                {
+                if (radio.transmit(ackPkt, true) == RADIOLIB_ERR_NONE) {
                     auto& sm = StatsManager::instance();
                     sm.lock();
                     sm.get().controlHeartbeatAckTx++;
                     sm.unlock();
+                    noteLinkActivity();
+                } else {
+                    noteRadioTxError();
                 }
-                radio.transmit(ackPkt, true);
-                noteLinkActivity();
             } else if (ctrl.type == ControlType::DATA_PENDING) {
                 {
                     auto& sm = StatsManager::instance();
@@ -839,17 +849,20 @@ static void radioRxTask(void*) {
                 ready.seq  = ctrl.seq;
                 Packet readyPkt;
                 framingBuildControlPacket(readyPkt, ready);
-                {
+                if (radio.transmit(readyPkt, true) == RADIOLIB_ERR_NONE) {
                     auto& sm = StatsManager::instance();
                     sm.lock();
                     sm.get().controlDataReadyTx++;
                     sm.unlock();
+                    noteLinkActivity();
+                } else {
+                    noteRadioTxError();
                 }
-                radio.transmit(readyPkt, true);
-                noteLinkActivity();
             } else if (ctrl.type == ControlType::HEARTBEAT_ACK ||
                        ctrl.type == ControlType::DATA_READY) {
-                xQueueSend(controlQueue, &ctrl, 0);
+                if (xQueueSend(controlQueue, &ctrl, 0) != pdPASS) {
+                    noteControlQueueDrop();
+                }
             }
             continue;
         }
@@ -1155,7 +1168,7 @@ static void radioTxTask(void*) {
 
         // DATA_PENDING/DATA_READY primer before multi-fragment bursts after idle.
         // Single-fragment frames skip this because they act as natural primers.
-        if (total_frags > 1 && isLinkIdle()) {
+        if (total_frags > 1 && !isLinkReady()) {
             g_control_seq++;
             const uint16_t cseq = g_control_seq;
             ControlFrame ctrl;

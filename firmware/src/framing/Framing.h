@@ -343,7 +343,14 @@ inline bool framingParseControl(const Packet& pkt, ControlFrame& ctrl) {
     if (pkt.len < FRAMING_CONTROL_LEN) return false;
     if (!framingHasValidVersion(pkt)) return false;
     if (framingPacketType(pkt) != LinkPacketType::CONTROL) return false;
-    ctrl.type          = static_cast<ControlType>(pkt.data[1]);
+    const ControlType type = static_cast<ControlType>(pkt.data[1]);
+    if (type != ControlType::HEARTBEAT &&
+        type != ControlType::HEARTBEAT_ACK &&
+        type != ControlType::DATA_PENDING &&
+        type != ControlType::DATA_READY) {
+        return false;
+    }
+    ctrl.type          = type;
     ctrl.seq           = static_cast<uint16_t>(
                              (static_cast<uint16_t>(pkt.data[2]) << 8) | pkt.data[3]);
     ctrl.flags         = pkt.data[4];
