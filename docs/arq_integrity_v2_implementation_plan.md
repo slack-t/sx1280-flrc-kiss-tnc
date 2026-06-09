@@ -1,5 +1,32 @@
 # ARQ Integrity v2 Implementation Plan
 
+## Status: ✅ Implemented (2026-05-29)
+
+Landed in commits `1d24a57 feat: add ARQ integrity v2 framing` and `99b7aab fix: harden ARQ
+integrity handling`. Plan retained for historical context and post-mortem reference.
+
+Implementation locations:
+
+| Plan item | Location |
+| --- | --- |
+| CRC32 helper (IEEE 802.3 / zlib polynomial) | `firmware/src/framing/Crc32.h` |
+| `FRAMING_VERSION = 2`, `FRAMING_DATA_HDR_LEN = 13`, `FRAMING_FRAG_DATA = 114`, `FRAMING_MAX_FRAGS = 9` | `firmware/src/framing/Framing.h:66-90` |
+| `DataFrameHeader.frame_len`, `frame_crc32` | `firmware/src/framing/Framing.h:114-115` |
+| `framingBuildDataPacket()` writes new fields | `firmware/src/framing/Framing.h:234-268` |
+| `framingParseDataHeader()` reads and range-checks | `firmware/src/framing/Framing.h:156-186` |
+| `framingExpectedTotalFrags / FragmentLen / ValidateDataFragment` | `firmware/src/framing/Framing.h:300-328` |
+| Reassembler stores `frame_len` and `frame_crc32`; `reset()` clears them | `firmware/src/framing/Framing.h:378-398` |
+| Per-fragment validation before reassembly (drop, no ACK on fail) | `firmware/src/main.cpp:971-977` |
+| Mismatched metadata on continuing sequence is rejected | `firmware/src/main.cpp:1046-1055` |
+| Final length + CRC check before `xQueueSend(rxQueue)` | `firmware/src/main.cpp:720-744` (`isReassemblyValid`) |
+| Stats counters `arqFragmentMetadataDrops`, `arqReassemblyIntegrityDrops`, `arqFrameCrcErrors` | `firmware/src/stats/Stats.h:32-34` |
+| Native CRC32 tests (empty, 5B, 1024B vectors) | `firmware/test/test_kiss/test_kiss.cpp:498-510` |
+| Host tool fragment sizing | `pi-daemon/raw_fragment_test.py:38`, `pi-daemon/ping_test.py:25` |
+
+Outstanding follow-ups (not blocking Phase 2):
+
+- Field re-run `raw_fragment_test.py` after Phase 3 (heartbeat) to re-confirm acceptance gate `bad=0`.
+
 ## Problem Statement
 
 Generic fragmented ARQ can currently deliver a reassembled KISS payload whose length is shorter

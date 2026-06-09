@@ -2,7 +2,19 @@
 
 The observed Generic-mode failures are two separate problems and should be fixed in separate phases.
 
-## Phase 1: ARQ Integrity v2
+## Status
+
+| Phase | State | Landed in |
+| --- | --- | --- |
+| Phase 1 — ARQ Integrity v2 | ✅ done | `1d24a57 feat: add ARQ integrity v2 framing`, `99b7aab fix: harden ARQ integrity handling` |
+| Phase 3 — Idle Heartbeat Control | ✅ done | `ac72bc2 feat: implement idle heartbeat and DATA_PENDING/DATA_READY link control`, `2358150 fix: tighten link control readiness handling`, `4c74b05 fix: use ARQ warmup for idle fragmented bursts` |
+| Phase 2 — MAC Arbiter v2 | ⏳ next | — |
+
+Phases 1 and 3 were implemented out of the original recommended order. Phase 1 is correctness; the
+acceptance gate is a clean `raw_fragment_test.py` one-way sweep (`bad=0`, any loss visible only as
+missing sequence numbers).
+
+## Phase 1: ARQ Integrity v2 ✅
 
 Read: `docs/arq_integrity_v2_implementation_plan.md`
 
@@ -16,7 +28,7 @@ Purpose:
 This phase directly addresses the `raw_fragment_test.py` result where frames such as `declared=480`
 were delivered with shorter received lengths.
 
-## Phase 2: MAC Arbiter v2
+## Phase 2: MAC Arbiter v2 ⏳
 
 Read: `docs/mac_arbiter_v2_implementation_plan.md`
 
@@ -30,7 +42,7 @@ Purpose:
 This phase addresses the separate half-duplex ownership problem seen with ping/TUN and other
 bidirectional traffic.
 
-## Phase 3: Idle Heartbeat Control
+## Phase 3: Idle Heartbeat Control ✅
 
 Read: `docs/idle_heartbeat_control_plan.md`
 
@@ -45,9 +57,8 @@ Purpose:
 This phase addresses the confirmed failure mode where the first multi-fragment frame after idle is
 unreliable unless a small one-fragment payload is sent first.
 
-## Recommended Order
+## Recommended Order (historical)
 
-Implement ARQ Integrity v2 first. It fixes a correctness bug that can corrupt one-way raw payload
-delivery. Implement Idle Heartbeat Control next if large-only fragmented tests still need a manual
-small primer. Implement MAC Arbiter v2 when bidirectional DATA/ACK contention becomes the dominant
-remaining problem.
+Original recommendation was ARQ Integrity v2 first (correctness), Idle Heartbeat Control next (idle
+priming), MAC Arbiter v2 last (bidirectional collisions). Actual order followed the first two; only
+MAC Arbiter v2 remains.

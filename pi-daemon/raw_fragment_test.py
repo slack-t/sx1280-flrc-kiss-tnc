@@ -240,6 +240,10 @@ def main() -> int:
     parser.add_argument("--baud", type=int, default=921600, help="Baud rate")
     parser.add_argument("--boot-wait", type=float, default=0.0,
                         help="Seconds to wait after opening USB CDC")
+    parser.add_argument("--stats", action="store_true", default=argparse.SUPPRESS,
+                        help="Query firmware STATS on the already-open serial session before closing")
+    parser.add_argument("--stats-timeout", type=float, default=argparse.SUPPRESS,
+                        help="Seconds to wait for the STATS response")
 
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -256,9 +260,9 @@ def main() -> int:
                       help="Serial write chunk size for encoded KISS frames")
     send.add_argument("--write-gap-ms", type=float, default=2.0,
                       help="Delay between serial write chunks")
-    send.add_argument("--stats", action="store_true",
+    send.add_argument("--stats", action="store_true", default=argparse.SUPPRESS,
                       help="Query firmware STATS on the already-open serial session before closing")
-    send.add_argument("--stats-timeout", type=float, default=1.0,
+    send.add_argument("--stats-timeout", type=float, default=argparse.SUPPRESS,
                       help="Seconds to wait for the STATS response")
 
     listen = sub.add_parser("listen", help="Receive and validate raw KISS payloads")
@@ -266,12 +270,16 @@ def main() -> int:
                         help="Stop after this many idle seconds")
     listen.add_argument("--expected", type=int, default=0,
                         help="Stop after receiving this many frames")
-    listen.add_argument("--stats", action="store_true",
+    listen.add_argument("--stats", action="store_true", default=argparse.SUPPRESS,
                         help="Query firmware STATS on the already-open serial session before closing")
-    listen.add_argument("--stats-timeout", type=float, default=1.0,
+    listen.add_argument("--stats-timeout", type=float, default=argparse.SUPPRESS,
                         help="Seconds to wait for the STATS response")
 
     args = parser.parse_args()
+    if not hasattr(args, "stats"):
+        args.stats = False
+    if not hasattr(args, "stats_timeout"):
+        args.stats_timeout = 1.0
     if args.command == "send":
         return run_send(args)
     return run_listen(args)
