@@ -3,6 +3,47 @@
 #include <stdio.h>
 #include <string.h>
 
+namespace {
+
+void formatCount(char* out, size_t outLen, uint32_t value) {
+    if (value < 1000u) {
+        snprintf(out, outLen, "%lu", static_cast<unsigned long>(value));
+    } else if (value < 100000u) {
+        snprintf(out, outLen, "%lu.%luk",
+                 static_cast<unsigned long>(value / 1000u),
+                 static_cast<unsigned long>((value % 1000u) / 100u));
+    } else if (value < 1000000u) {
+        snprintf(out, outLen, "%luk",
+                 static_cast<unsigned long>(value / 1000u));
+    } else if (value < 100000000u) {
+        snprintf(out, outLen, "%lu.%luM",
+                 static_cast<unsigned long>(value / 1000000u),
+                 static_cast<unsigned long>((value % 1000000u) / 100000u));
+    } else {
+        snprintf(out, outLen, "%luM",
+                 static_cast<unsigned long>(value / 1000000u));
+    }
+}
+
+void formatLinkAge(char* out, size_t outLen, uint32_t ageMs) {
+    if (ageMs == 0xFFFFFFFFu) {
+        snprintf(out, outLen, "--");
+    } else if (ageMs < 1000u) {
+        snprintf(out, outLen, "%lums", static_cast<unsigned long>(ageMs));
+    } else if (ageMs < 10000u) {
+        snprintf(out, outLen, "%lu.%lus",
+                 static_cast<unsigned long>(ageMs / 1000u),
+                 static_cast<unsigned long>((ageMs % 1000u) / 100u));
+    } else if (ageMs < 100000u) {
+        snprintf(out, outLen, "%lus",
+                 static_cast<unsigned long>(ageMs / 1000u));
+    } else {
+        snprintf(out, outLen, ">99s");
+    }
+}
+
+}  // namespace
+
 bool Display::begin() {
     _lcd.init();
     _lcd.setRotation(0);
@@ -63,59 +104,103 @@ void Display::_drawChrome() {
 void Display::update(const Stats& s) {
     if (!_initialised) return;
 
+    const uint32_t now = millis();
+    if (s.txCount != _prev.txCount) {
+        _flashTxUntilMs = now + 750u;
+    }
+    if (s.rxCount != _prev.rxCount) {
+        _flashRxUntilMs = now + 750u;
+    }
+
     _sprite.fillSprite(TFT_BLACK);
 
-    // Header bar: title + transport mode
+    // Header: link state, transport mode, and recent traffic indicators.
+    const char* linkLabel = "DOWN";
+    if (s.radioState == RadioState::ERROR) {
+        linkLabel = "ERROR";
+    } else if (s.linkState == static_cast<uint8_t>(LinkState::READY)) {
+        linkLabel = "READY";
+    } else if (s.linkState == static_cast<uint8_t>(LinkState::PROBING)) {
+        linkLabel = "PROBE";
+    }
+    const char mode =
+        (s.transportMode == static_cast<uint8_t>(TransportMode::NATIVE_PACKET))
+            ? 'N'
+            : 'G';
+
     _sprite.fillRect(0, 0, OLED_WIDTH, 11, TFT_WHITE);
     _sprite.setTextColor(TFT_BLACK, TFT_WHITE);
     _sprite.setCursor(2, 2);
-    {
-        char titleBuf[20];
-        snprintf(titleBuf, sizeof(titleBuf), "SX1280 FLRC %s",
-                 (s.transportMode == static_cast<uint8_t>(TransportMode::NATIVE_PACKET)) ? "[N]" : "[G]");
-        _sprite.print(titleBuf);
-    }
-
-    // Dividers
-    _sprite.drawFastHLine(0, 12, OLED_WIDTH, TFT_WHITE);
-    _sprite.drawFastVLine(64, 12, OLED_HEIGHT - 12, TFT_WHITE);
-
-    _sprite.setTextColor(TFT_WHITE, TFT_BLACK);
     char buf[32];
-
-    // Row 1: frequency | bitrate
-    snprintf(buf, sizeof(buf), "F:%.1f", s.freqMHz);
-    _sprite.setCursor(2, 15);
+    snprintf(buf, sizeof(buf), "LINK %-5s %c  %c%c",
+             linkLabel,
+             mode,
+             static_cast<int32_t>(_flashTxUntilMs - now) > 0 ? 'T' : '-',
+             static_cast<int32_t>(_flashRxUntilMs - now) > 0 ? 'R' : '-');
     _sprite.print(buf);
 
-    snprintf(buf, sizeof(buf), "R:%luK", s.bitrateKbps);
-    _sprite.setCursor(68, 15);
-    _sprite.print(buf);
+    _sprite.drawFastHLine(0, 12, OLED_WIDTH, TFT_WHITE);
+    _sprite.setTextColor(TFT_WHITE, TFT_BLACK);
 
-    // Row 2: coding rate + power | preamble + BT shaping
-    snprintf(buf, sizeof(buf), "CR:%u P:%d", s.codingRate, s.txPowerDbm);
-    _sprite.setCursor(2, 27);
-    _sprite.print(buf);
-
-    snprintf(buf, sizeof(buf), "PR:%u BT:%u", s.preambleBits, s.btShaping);
-    _sprite.setCursor(68, 27);
-    _sprite.print(buf);
-
-    // Row 3: sync word (spans full width)
-    snprintf(buf, sizeof(buf), "SW:%08lx", static_cast<unsigned long>(s.syncWord));
-    _sprite.setCursor(2, 39);
-    _sprite.print(buf);
-
-    // Row 4: LBT threshold
-    if (s.lbtRssiThresholdDbm == 0) {
-        snprintf(buf, sizeof(buf), "LBT:OFF");
+    // PHY essentials.
+    char rate[8];
+    if (s.bitrateKbps >= 1000u) {
+        snprintf(rate, sizeof(rate), "%lu.%luM",
+                 static_cast<unsigned long>(s.bitrateKbps / 1000u),
+                 static_cast<unsigned long>((s.bitrateKbps % 1000u) / 100u));
     } else {
-        snprintf(buf, sizeof(buf), "LBT:%d", s.lbtRssiThresholdDbm);
+        snprintf(rate, sizeof(rate), "%luK",
+                 static_cast<unsigned long>(s.bitrateKbps));
     }
-    _sprite.setCursor(2, 51);
+    snprintf(buf, sizeof(buf), "%.1f %s C%u P%+d",
+             s.freqMHz, rate, s.codingRate, s.txPowerDbm);
+    _sprite.setCursor(2, 14);
+    _sprite.print(buf);
+
+    // Signal and peer freshness.
+    char age[10];
+    formatLinkAge(age, sizeof(age), s.linkAgeMs);
+    if (s.rssi == 0) {
+        snprintf(buf, sizeof(buf), "RSSI: ---  AGE:%s", age);
+    } else {
+        snprintf(buf, sizeof(buf), "RSSI:%4d  AGE:%s", s.rssi, age);
+    }
+    _sprite.setCursor(2, 24);
+    _sprite.print(buf);
+
+    // Delivered traffic counters.
+    char tx[8];
+    char rx[8];
+    formatCount(tx, sizeof(tx), s.txCount);
+    formatCount(rx, sizeof(rx), s.rxCount);
+    snprintf(buf, sizeof(buf), "TX:%s  RX:%s", tx, rx);
+    _sprite.setCursor(2, 34);
+    _sprite.print(buf);
+
+    // Failure, retry, and egress-backpressure indicators.
+    char errors[8];
+    char retries[8];
+    char deferrals[8];
+    formatCount(errors, sizeof(errors), s.errorCount);
+    formatCount(retries, sizeof(retries), s.arqRetryCount);
+    formatCount(deferrals, sizeof(deferrals), s.rxEgressDeferrals);
+    snprintf(buf, sizeof(buf), "E:%s R:%s BP:%s", errors, retries, deferrals);
+    _sprite.setCursor(2, 44);
+    _sprite.print(buf);
+
+    // MAC stack margin and host queue pressure.
+    char hwm[8];
+    char txWait[8];
+    char rxWait[8];
+    formatCount(hwm, sizeof(hwm), s.macStackHwm);
+    formatCount(txWait, sizeof(txWait), s.txQueueWaitCount);
+    formatCount(rxWait, sizeof(rxWait), s.rxQueueWaitCount);
+    snprintf(buf, sizeof(buf), "MAC:%s Q:%s/%s", hwm, txWait, rxWait);
+    _sprite.setCursor(2, 54);
     _sprite.print(buf);
 
     _sprite.pushSprite(&_lcd, 0, 0);
+    _prev = s;
 }
 
 void Display::notifyTx() {

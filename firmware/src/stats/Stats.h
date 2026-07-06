@@ -98,6 +98,11 @@ struct Stats {
     uint32_t linkAgeMs  = 0xFFFFFFFFu;
     uint8_t  configVersion = 0;
     uint8_t  configSource = 0;
+    // ── MAC / task supervision ───────────────────────────────────────────────
+    uint32_t rxEgressDeferrals = 0;  // final ACK withheld: rxQueue full
+    uint32_t macStackHwm       = 0;  // bytes remaining at stack high-water mark
+    uint32_t serialRxStackHwm  = 0;
+    uint32_t serialTxStackHwm  = 0;
 };
 
 // Singleton wrapper with a FreeRTOS mutex.

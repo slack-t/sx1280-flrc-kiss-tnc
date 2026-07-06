@@ -24,6 +24,9 @@ public:
 #define ERR_SYNCWORD -1003
 #define ERR_HEADER -1004
 
+// Ownership: after boot, the MAC task (src/mac/Mac.cpp) is the sole caller of
+// transmit(), startReceive(), readPacket(), isChannelBusy(), applyConfig() and
+// scanBand(). Other tasks must go through the mac:: request functions.
 class Radio {
 public:
     // Initialise SX1280 with FLRC parameters from config.h.
@@ -62,8 +65,11 @@ public:
     uint16_t lastIrqStatus() const { return _lastIrqStatus; }
     uint16_t lastPacketLength() const { return _lastPacketLength; }
 
-    // FreeRTOS semaphore given from the DIO1 ISR — radio task waits on this
+    // FreeRTOS semaphore given from the DIO1 ISR — the MAC task waits on this
     SemaphoreHandle_t rxSemaphore = nullptr;
+
+    // Tick timestamp of the last DIO1 edge, captured in the ISR.
+    volatile TickType_t lastDio1Tick = 0;
 
     // Set true while a blocking transmit() is in progress so the ISR does not
     // spuriously signal rxSemaphore on the TX-done DIO1 pulse.

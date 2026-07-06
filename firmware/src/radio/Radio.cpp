@@ -233,6 +233,9 @@ uint8_t Radio::scanBand(float startMHz, float stopMHz, float stepMHz,
 }
 
 void IRAM_ATTR Radio::_dio1Isr() {
+    if (_radioInstance) {
+        _radioInstance->lastDio1Tick = xTaskGetTickCountFromISR();
+    }
     // Suppress the TX-done DIO1 pulse — only signal on genuine RX events.
     if (_radioInstance && _radioInstance->rxSemaphore && !_radioInstance->_txActive) {
         // Fast hardware check: DIO1 must be physically HIGH for a genuine RX_DONE interrupt.

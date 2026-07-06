@@ -46,8 +46,8 @@ public:
     // Initialise SSD1306 and draw the static chrome (title bar, dividers)
     bool begin();
 
-    // Redraw the dynamic fields from the given Stats snapshot.
-    // Only redraws values that have changed to avoid flicker.
+    // Redraw the live operational status from the given Stats snapshot.
+    // Rendering uses the offscreen sprite to avoid flicker.
     void update(const Stats& stats);
 
     // Draw a critical error screen on the display and halt

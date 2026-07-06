@@ -93,11 +93,20 @@
 
 
 // ── Task stack sizes (bytes) ─────────────────────────────────────────────────
-#define STACK_RADIO_RX          4096
-#define STACK_RADIO_TX          4096
+#define STACK_MAC               6144
 #define STACK_SERIAL_RX         8192
 #define STACK_SERIAL_TX         8192
 #define STACK_DISPLAY           8192
+
+// ── MAC task (single radio owner) ────────────────────────────────────────────
+// Longest sleep per loop iteration; must stay well below MAC_WDT_TIMEOUT_S.
+#define MAC_MAX_WAIT_MS         1000
+// Task watchdog timeout for the MAC task.
+#define MAC_WDT_TIMEOUT_S       15
+// Retry interval when a completed frame cannot be delivered to the host queue
+// (rxQueue full). The final ACK is withheld until delivery succeeds so queue
+// saturation causes retransmission, never acknowledged loss.
+#define RX_EGRESS_RETRY_MS      20
 
 // ── Task priorities ──────────────────────────────────────────────────────────
 #define PRIO_RADIO              4
