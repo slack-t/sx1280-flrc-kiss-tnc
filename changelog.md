@@ -23,6 +23,12 @@
   frames with no corruption, duplicates, missing frames, serial-integrity drops,
   or ARQ retry-exhaustion counters. Documented results in
   `docs/wp_b_bench_20260707.md`.
+- Reran the induced-loss profile at `power=-18` on both boards and confirmed a
+  clean 30/30 zero-gap burst with no corruption, duplication, or retry
+  exhaustion. Also exercised larger host-blocked and concurrent-transmit pressure
+  runs; those are documented in `docs/wp_b_bench_20260707.md` as follow-up
+  validation because they did not yet produce a clean receiver-side blocked-
+  egress artifact.
 
 ### WP-B MAC integration
 
