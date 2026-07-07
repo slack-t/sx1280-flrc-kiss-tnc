@@ -10,7 +10,9 @@
 #include <string.h>
 
 #include "../config.h"
+#include "../arq/ArqEngine.h"
 #include "../framing/Framing.h"
+#include "../framing/FramingV3.h"
 #include "../framing/Crc32.h"
 #include "../stats/Stats.h"
 
@@ -80,6 +82,9 @@ struct CompletedFrameCache {
 };
 Reassembler         s_ra;         // lives in BSS, never on the task stack
 CompletedFrameCache s_completed;
+arq::ArqEngine      s_arq;
+arq::ArqCounters    s_arqLastCounters;
+PayloadFrame        s_arqDeliveryFrame;
 
 // ── TX-side state machine ─────────────────────────────────────────────────────
 enum class TxPhase : uint8_t {
@@ -234,6 +239,155 @@ void noteMalformedAck()       { bumpCounter(&Stats::rxMalformedAckCount); }
 void noteMalformedData()      { bumpCounter(&Stats::rxMalformedDataCount); }
 void noteNativeOversizeDrop() { bumpCounter(&Stats::nativeOversizeDropCount); }
 void noteEgressDeferral()     { bumpCounter(&Stats::rxEgressDeferrals); }
+
+bool isGenericTransport() {
+    return s_radio->config().transportMode == TransportMode::GENERIC_FRAGMENTED;
+}
+
+void refreshArqDebugStats(uint32_t now) {
+    uint32_t deadline = 0;
+    const bool has_deadline = s_arq.nextDeadline(now, deadline);
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    Stats& stats = sm.get();
+    stats.arqV3TxActive = s_arq.txActiveCount();
+    stats.arqV3TxQueued = s_arq.txQueuedCount();
+    stats.arqV3RxActive = s_arq.rxActiveCount();
+    stats.arqV3PendingAck = s_arq.pendingAckCount();
+    stats.arqV3RemoteCredits = s_arq.remoteCredits();
+    stats.arqV3TxPoolFree = s_arq.txPoolFreeCount();
+    stats.arqV3RxPoolFree = s_arq.rxPoolFreeCount();
+    stats.arqV3NextDeadlineMs = has_deadline ?
+        static_cast<uint32_t>(static_cast<int32_t>(deadline - now) < 0 ? 0 : deadline - now) :
+        0xFFFFFFFFu;
+    sm.unlock();
+}
+
+void syncArqCounters() {
+    const arq::ArqCounters now = s_arq.counters();
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    Stats& stats = sm.get();
+    stats.arqV3RetryExhaustion += now.retry_exhaustion - s_arqLastCounters.retry_exhaustion;
+    stats.arqV3Saturation += now.saturation - s_arqLastCounters.saturation;
+    stats.arqV3MalformedInput += now.malformed_input - s_arqLastCounters.malformed_input;
+    stats.arqV3CreditWithdrawal += now.credit_withdrawal - s_arqLastCounters.credit_withdrawal;
+    stats.arqV3AllocationFailure += now.allocation_failure - s_arqLastCounters.allocation_failure;
+    stats.arqV3TxCompleted += now.tx_completed - s_arqLastCounters.tx_completed;
+    stats.arqFramesFailed += now.retry_exhaustion - s_arqLastCounters.retry_exhaustion;
+    stats.arqDuplicateSuppressed += now.duplicate_suppressed - s_arqLastCounters.duplicate_suppressed;
+    stats.rxEgressDeferrals += now.credit_withdrawal - s_arqLastCounters.credit_withdrawal;
+    sm.unlock();
+    s_arqLastCounters = now;
+    refreshArqDebugStats(millis());
+}
+
+bool waitForLbt(uint32_t now) {
+    (void)now;
+    if (s_radio->config().lbtRssiThresholdDbm == 0) {
+        return true;
+    }
+    for (uint8_t tries = 0; tries < RADIO_LBT_MAX_RETRIES; ++tries) {
+        if (!s_radio->isChannelBusy()) {
+            return true;
+        }
+        vTaskDelay(pdMS_TO_TICKS(lbtBackoffMs()));
+    }
+    return true;
+}
+
+bool sendArqRadioPacket(const framing_v3::Packet& v3pkt, void*) {
+    framing_v3::PacketType type = framing_v3::PacketType::DATA;
+    if (framing_v3::parsePacketType(v3pkt, type) != framing_v3::ParseResult::OK) {
+        return false;
+    }
+    if (type == framing_v3::PacketType::DATA) {
+        waitForLbt(millis());
+    }
+
+    Packet pkt;
+    pkt.len = v3pkt.len;
+    memcpy(pkt.data, v3pkt.data, v3pkt.len);
+
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    sm.get().radioState = RadioState::TX;
+    if (type == framing_v3::PacketType::ACK) {
+        sm.get().arqAckTxCount++;
+    }
+    sm.unlock();
+
+    const int16_t err = s_radio->transmit(pkt, true);
+
+    sm.lock();
+    sm.get().radioState = RadioState::IDLE;
+    if (err != RADIOLIB_ERR_NONE) {
+        if (type == framing_v3::PacketType::ACK) {
+            sm.get().arqAckTxErrors++;
+        }
+    }
+    sm.unlock();
+
+    if (err != RADIOLIB_ERR_NONE) {
+        noteRadioTxError();
+        return false;
+    }
+    notePayloadActivity();
+    if (type == framing_v3::PacketType::DATA) {
+        vTaskDelay(pdMS_TO_TICKS(RADIO_INTER_FRAG_DELAY_MS));
+    }
+    return true;
+}
+
+bool deliverArqDatagram(const uint8_t* data, uint16_t len, void*) {
+    if (data == nullptr || len == 0 || len > TNC_PAYLOAD_MAX_LEN) {
+        return false;
+    }
+    s_arqDeliveryFrame.len = len;
+    s_arqDeliveryFrame.rssi = s_radio->lastRssi();
+    memcpy(s_arqDeliveryFrame.data, data, len);
+    if (xQueueSend(s_rxQueue, &s_arqDeliveryFrame, 0) != pdPASS) {
+        noteEgressDeferral();
+        return false;
+    }
+
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    sm.get().rxCount++;
+    sm.get().rxBytes += len;
+    sm.get().rssi = s_arqDeliveryFrame.rssi;
+    sm.get().radioState = RadioState::RX;
+    sm.get().arqFramesCompleted++;
+    if (uxQueueSpacesAvailable(s_rxQueue) == 0) {
+        sm.get().rxQueueWaitCount++;
+    }
+    sm.unlock();
+    notePayloadActivity();
+    return true;
+}
+
+uint8_t arqEgressCapacity(void*) {
+    if (s_rxQueue == nullptr) {
+        return 0;
+    }
+    const UBaseType_t spaces = uxQueueSpacesAvailable(s_rxQueue);
+    return spaces > 255 ? 255 : static_cast<uint8_t>(spaces);
+}
+
+void resetArqEngine() {
+    arq::ArqConfig cfg;
+    cfg.retry_timeout_cycles = ackTimeoutMs(framing_v3::V3_MAX_FRAGS);
+    cfg.max_attempts = 8;
+    cfg.initial_remote_credits = arq::ARQ_MAX_OUTSTANDING;
+
+    arq::ArqCallbacks callbacks;
+    callbacks.send_packet = sendArqRadioPacket;
+    callbacks.deliver_datagram = deliverArqDatagram;
+    callbacks.egress_capacity = arqEgressCapacity;
+    callbacks.user = nullptr;
+    s_arq.reset(cfg, callbacks);
+    s_arqLastCounters = s_arq.counters();
+}
 
 // ── RX-side ACK / delivery ────────────────────────────────────────────────────
 // Transmit a bitmap ACK. Returns true on success. Counter bookkeeping only;
@@ -624,6 +778,24 @@ void startFrame(uint32_t now) {
 
 void startHeartbeat(uint32_t now) {
     s_control_seq++;
+    if (isGenericTransport()) {
+        framing_v3::ControlFrame ctrl;
+        ctrl.subtype = framing_v3::ControlSubtype::HEARTBEAT;
+        framing_v3::Packet pkt;
+        if (framing_v3::buildControlPacket(pkt, ctrl) != framing_v3::ParseResult::OK) {
+            return;
+        }
+        bumpCounter(&Stats::controlHeartbeatTx);
+        if (sendArqRadioPacket(pkt, nullptr)) {
+            noteLinkActivity();
+            s_tx.phase       = TxPhase::HB_WAIT;
+            s_tx.deadline_ms = millis() + RADIO_CONTROL_ACK_TIMEOUT_MS;
+        } else {
+            s_nextHbMs = now + hbIntervalMs();
+        }
+        return;
+    }
+
     ControlFrame ctrl;
     ctrl.type = ControlType::HEARTBEAT;
     ctrl.seq  = s_control_seq;
@@ -690,6 +862,74 @@ void handleAckForTx(const AckFrame& ack) {
     }
 }
 
+void handleV3Control(const framing_v3::ControlFrame& ctrl) {
+    if (ctrl.subtype == framing_v3::ControlSubtype::HEARTBEAT) {
+        bumpCounter(&Stats::controlHeartbeatRx);
+        framing_v3::ControlFrame ackCtrl;
+        ackCtrl.subtype = framing_v3::ControlSubtype::HEARTBEAT_ACK;
+        framing_v3::Packet ackPkt;
+        if (framing_v3::buildControlPacket(ackPkt, ackCtrl) == framing_v3::ParseResult::OK &&
+            sendArqRadioPacket(ackPkt, nullptr)) {
+            bumpCounter(&Stats::controlHeartbeatAckTx);
+            noteLinkActivity();
+        }
+        return;
+    }
+    if (ctrl.subtype == framing_v3::ControlSubtype::HEARTBEAT_ACK) {
+        if (s_tx.phase == TxPhase::HB_WAIT) {
+            bumpCounter(&Stats::controlHeartbeatAckRx);
+            noteBidirectionalControl();
+            refreshLinkStats();
+            postFrame(millis());
+        }
+        return;
+    }
+    if (ctrl.subtype == framing_v3::ControlSubtype::LINK_STATE) {
+        noteBidirectionalControl();
+    }
+}
+
+void handleV3RadioPacket(const Packet& pkt) {
+    framing_v3::Packet v3pkt;
+    v3pkt.len = pkt.len;
+    memcpy(v3pkt.data, pkt.data, pkt.len);
+
+    framing_v3::PacketType type = framing_v3::PacketType::DATA;
+    const framing_v3::ParseResult typeResult = framing_v3::parsePacketType(v3pkt, type);
+    if (typeResult == framing_v3::ParseResult::VERSION_MISMATCH) {
+        bumpCounter(&Stats::v3VersionDrops);
+        return;
+    }
+    if (typeResult == framing_v3::ParseResult::UNKNOWN_TYPE) {
+        bumpCounter(&Stats::v3UnknownTypeDrops);
+        return;
+    }
+    if (typeResult != framing_v3::ParseResult::OK) {
+        bumpCounter(&Stats::rxMalformedDataCount);
+        return;
+    }
+
+    noteLinkActivity();
+    if (type == framing_v3::PacketType::CONTROL) {
+        framing_v3::ControlFrame ctrl;
+        if (framing_v3::parseControlPacket(v3pkt, ctrl) != framing_v3::ParseResult::OK) {
+            noteControlMalformed();
+            return;
+        }
+        handleV3Control(ctrl);
+        return;
+    }
+
+    if (type == framing_v3::PacketType::ACK) {
+        bumpCounter(&Stats::arqAckRxCount);
+    }
+    if (type == framing_v3::PacketType::DATA || type == framing_v3::PacketType::ACK) {
+        notePayloadActivity();
+    }
+    s_arq.onRxPacket(v3pkt, millis());
+    syncArqCounters();
+}
+
 // ── RX event handling ─────────────────────────────────────────────────────────
 void handleRadioEvent() {
     static Packet pkt;  // BSS, not on the task stack
@@ -716,6 +956,11 @@ void handleRadioEvent() {
             bumpCounter(&Stats::rxReadDataErrorCount);
         }
         noteRadioRxError();
+        return;
+    }
+
+    if (isGenericTransport()) {
+        handleV3RadioPacket(pkt);
         return;
     }
 
@@ -923,6 +1168,10 @@ void handleRadioEvent() {
 
 // ── Periodic services ─────────────────────────────────────────────────────────
 void serviceRx(uint32_t now) {
+    if (isGenericTransport()) {
+        (void)now;
+        return;
+    }
     if (s_ra.seq == FRAMING_SEQ_UNSET) {
         return;
     }
@@ -942,6 +1191,19 @@ void serviceRx(uint32_t now) {
 }
 
 void serviceTx(uint32_t now) {
+    if (isGenericTransport()) {
+        if (s_tx.phase == TxPhase::HB_WAIT) {
+            if (deadlinePassed(now, s_tx.deadline_ms)) {
+                refreshLinkStats();
+                postFrame(now);
+            }
+            return;
+        }
+        s_arq.onTick(now);
+        syncArqCounters();
+        return;
+    }
+
     switch (s_tx.phase) {
     case TxPhase::IDLE:
         break;
@@ -995,6 +1257,11 @@ void executeStagedCommand() {
     switch (cmd->type) {
     case MacCommand::Type::APPLY_CONFIG:
         cmd->result = s_radio->applyConfig(cmd->cfg);
+        if (cmd->result == RADIOLIB_ERR_NONE) {
+            s_ra.reset();
+            s_tx = TxState{};
+            resetArqEngine();
+        }
         break;
     case MacCommand::Type::SCAN_BAND:
         cmd->scanCount = s_radio->scanBand(cmd->startMHz, cmd->stopMHz,
@@ -1016,6 +1283,9 @@ void serviceIdle(uint32_t now) {
         sm.get().macStackHwm = hwm;
         sm.unlock();
         refreshLinkStats();
+        if (isGenericTransport()) {
+            refreshArqDebugStats(now);
+        }
     }
 
     if (s_tx.phase != TxPhase::IDLE) {
@@ -1024,6 +1294,46 @@ void serviceIdle(uint32_t now) {
 
     if (s_stagedCmd != nullptr) {
         executeStagedCommand();
+        return;
+    }
+
+    if (isGenericTransport()) {
+        const uint8_t tx_slots_used =
+            static_cast<uint8_t>(s_arq.txActiveCount() + s_arq.txQueuedCount());
+        if (tx_slots_used < arq::ARQ_MAX_OUTSTANDING &&
+            xQueueReceive(s_txQueue, &s_tx.frame, 0) == pdPASS) {
+            if (s_tx.frame.len == 0 || s_tx.frame.len > TNC_PAYLOAD_MAX_LEN) {
+                noteRadioError();
+                return;
+            }
+            const arq::ArqResult result = s_arq.onTxDatagram(s_tx.frame.data, s_tx.frame.len);
+            if (result == arq::ArqResult::OK) {
+                bumpCounter(&Stats::arqFramesStarted);
+            } else {
+                noteQueueDrop();
+                noteRadioError();
+            }
+            syncArqCounters();
+            return;
+        }
+
+        if (s_arq.hasPendingWork()) {
+            return;
+        }
+
+        if (deadlinePassed(now, s_nextHbMs)) {
+            if (isLinkIdle()) {
+                startHeartbeat(now);
+            } else {
+                s_nextHbMs = now + hbIntervalMs();
+            }
+            return;
+        }
+
+        if (now - s_lastRadioEventMs >= RADIO_REARM_IDLE_MS) {
+            s_lastRadioEventMs = now;
+            s_radio->startReceive();
+        }
         return;
     }
 
@@ -1059,6 +1369,24 @@ uint32_t computeWaitMs(uint32_t now) {
         if (delta < 0) delta = 0;
         if (static_cast<uint32_t>(delta) < wait) wait = static_cast<uint32_t>(delta);
     };
+
+    if (isGenericTransport()) {
+        uint32_t arq_deadline = 0;
+        if (s_arq.nextDeadline(now, arq_deadline)) {
+            consider(arq_deadline);
+        }
+        if (s_tx.phase != TxPhase::IDLE) {
+            consider(s_tx.deadline_ms);
+        } else if (s_stagedCmd != nullptr) {
+            wait = 0;
+        } else if (uxQueueMessagesWaiting(s_txQueue) > 0 &&
+                   (s_arq.txActiveCount() + s_arq.txQueuedCount()) < arq::ARQ_MAX_OUTSTANDING) {
+            wait = 0;
+        } else if (!s_arq.hasPendingWork()) {
+            consider(s_nextHbMs);
+        }
+        return wait;
+    }
 
     if (s_ra.seq != FRAMING_SEQ_UNSET) {
         if (s_ra.ack_pending) {
@@ -1097,6 +1425,7 @@ void macTask(void*) {
 
     s_radio->startReceive();
     s_nextHbMs = millis() + hbIntervalMs();
+    resetArqEngine();
 
     for (;;) {
         esp_task_wdt_reset();

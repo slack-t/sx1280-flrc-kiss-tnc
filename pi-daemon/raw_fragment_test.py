@@ -9,6 +9,7 @@ bidirectional host traffic creating extra contention.
 
 import argparse
 import collections
+import hashlib
 import struct
 import time
 import zlib
@@ -35,9 +36,9 @@ MAGIC = b"RKFT"
 VERSION = 1
 HEADER = struct.Struct(">4sBIHI")
 HEADER_LEN = HEADER.size
-FRAG_DATA = 114
+FRAG_DATA = 115
 SERIAL_HDR_LEN = serial_integrity.SERIAL_INTEGRITY_HDR_LEN
-DEFAULT_SIZES = "105,106,107,219,220,221,333,334,335,447,448,449"
+DEFAULT_SIZES = "106,107,108,221,222,223,336,337,338,1279,1280"
 
 
 def query_stats(ser: serial.Serial, label: str, timeout_s: float) -> None:
@@ -90,6 +91,18 @@ def build_payload(seq: int, size: int) -> bytes:
     return HEADER.pack(MAGIC, VERSION, seq, size, crc) + body
 
 
+def payload_crc32(payload: bytes) -> int:
+    return zlib.crc32(payload) & 0xFFFFFFFF
+
+
+def payload_sha256(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def payload_signature(payload: bytes) -> str:
+    return f"{len(payload)}:{payload_sha256(payload)}"
+
+
 def parse_payload(payload: bytes) -> tuple[int, int, bool, str]:
     if len(payload) < HEADER_LEN:
         return (0, len(payload), False, "short")
@@ -112,6 +125,11 @@ def parse_payload(payload: bytes) -> tuple[int, int, bool, str]:
 
 
 def run_send(args: argparse.Namespace) -> int:
+    if args.stress_1280:
+        args.sizes = "1280"
+        args.count = 30
+        args.interval_ms = 0.0
+
     sizes = parse_sizes(args.sizes)
     try:
         ser = open_serial(args.port, args.baud, timeout=0.1)
@@ -138,12 +156,17 @@ def run_send(args: argparse.Namespace) -> int:
                 sent += 1
                 print(
                     f"TX seq={seq} len={size} frags={fragment_count(size)} "
+                    f"crc32=0x{payload_crc32(payload):08x} "
+                    f"sha256={payload_sha256(payload)[:16]} "
                     f"encoded={len(frame)} written={written}",
                     flush=True,
                 )
                 seq += 1
                 if args.interval_ms > 0:
                     time.sleep(args.interval_ms / 1000.0)
+        if args.hold_after_send > 0:
+            print(f"TX holding serial open for {args.hold_after_send:.1f}s", flush=True)
+            time.sleep(args.hold_after_send)
     finally:
         if args.stats:
             query_stats(ser, "TX", args.stats_timeout)
@@ -165,9 +188,11 @@ def run_listen(args: argparse.Namespace) -> int:
     decoder = KissDecoder(FIRMWARE_PAYLOAD_CAP + serial_integrity.SERIAL_INTEGRITY_HDR_LEN)
     by_size: dict[int, int] = collections.defaultdict(int)
     bad_reasons: dict[str, int] = collections.defaultdict(int)
-    seen: set[int] = set()
+    seen: dict[int, str] = {}
     total = 0
     bad = 0
+    duplicates = 0
+    duplicate_conflicts = 0
     first_seq = None
     last_seq = None
     deadline = time.monotonic() + args.idle_timeout
@@ -187,19 +212,32 @@ def run_listen(args: argparse.Namespace) -> int:
                         bad_reasons[f"serial_{e.__class__.__name__}"] += 1
                         print(f"RX serial integrity drop: {e}", flush=True)
                         continue
-                        
+
                     seq, size, ok, reason = parse_payload(payload)
                     total += 1
                     if ok:
-                        seen.add(seq)
-                        by_size[size] += 1
-                        first_seq = seq if first_seq is None else min(first_seq, seq)
-                        last_seq = seq if last_seq is None else max(last_seq, seq)
+                        signature = payload_signature(payload)
+                        if seq in seen:
+                            duplicates += 1
+                            if seen[seq] != signature:
+                                duplicate_conflicts += 1
+                                bad += 1
+                                bad_reasons["duplicate_conflict"] += 1
+                                reason = "duplicate_conflict"
+                            else:
+                                reason = "duplicate"
+                        else:
+                            seen[seq] = signature
+                            by_size[size] += 1
+                            first_seq = seq if first_seq is None else min(first_seq, seq)
+                            last_seq = seq if last_seq is None else max(last_seq, seq)
                     else:
                         bad += 1
                         bad_reasons[reason] += 1
                     print(
                         f"RX seq={seq} len={size} frags={fragment_count(size)} "
+                        f"crc32=0x{payload_crc32(payload):08x} "
+                        f"sha256={payload_sha256(payload)[:16]} "
                         f"status={reason}",
                         flush=True,
                     )
@@ -222,7 +260,12 @@ def run_listen(args: argparse.Namespace) -> int:
         missing = sum(1 for seq in range(first_seq, last_seq + 1) if seq not in seen)
 
     print("RX summary", flush=True)
-    print(f"  frames={total} valid={len(seen)} bad={bad} missing_in_range={missing}", flush=True)
+    print(
+        f"  frames={total} valid_unique={len(seen)} bad={bad} "
+        f"duplicates={duplicates} duplicate_conflicts={duplicate_conflicts} "
+        f"missing_in_range={missing}",
+        flush=True,
+    )
     if first_seq is not None:
         print(f"  seq_range={first_seq}..{last_seq}", flush=True)
     for size in sorted(by_size):
@@ -253,7 +296,11 @@ def main() -> int:
     send.add_argument("--count", type=int, default=5,
                       help="Number of sweeps over --sizes")
     send.add_argument("--interval-ms", type=float, default=250.0,
-                      help="Delay between sent frames")
+                      help="Delay between sent frames; use 0 for abusive burst/loss stress")
+    send.add_argument("--stress-1280", action="store_true",
+                      help="Shortcut for --sizes 1280 --count 30 --interval-ms 0")
+    send.add_argument("--hold-after-send", type=float, default=0.0,
+                      help="Seconds to keep serial open after writes so firmware queues can drain")
     send.add_argument("--start-seq", type=int, default=1,
                       help="First test sequence number")
     send.add_argument("--write-chunk", type=int, default=32,

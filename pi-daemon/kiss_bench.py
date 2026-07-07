@@ -18,7 +18,7 @@ Wire protocol (KISS data port 0):
 
 Max bench payload:
   Native transport  116 bytes  (125 byte FLRC packet - 9 byte header)
-  Generic/ARQ       1007 bytes (1016 byte wrapped payload cap - 9 byte header)
+  Generic/ARQ       1271 bytes (1280 byte firmware payload cap - 9 byte header)
 """
 
 import argparse

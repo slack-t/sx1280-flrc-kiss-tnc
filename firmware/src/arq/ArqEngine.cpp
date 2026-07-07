@@ -192,6 +192,55 @@ bool ArqEngine::hasPendingWork() const {
            rxActiveCount() > 0;
 }
 
+bool ArqEngine::nextDeadline(uint32_t now, uint32_t& deadline) const {
+    if (pending_ack_count_ > 0) {
+        deadline = now;
+        return true;
+    }
+    for (uint8_t i = 0; i < ARQ_MAX_RX_DATAGRAMS; ++i) {
+        if (rx_slots_[i].active && rx_slots_[i].complete_waiting_egress) {
+            deadline = now;
+            return true;
+        }
+    }
+    for (uint8_t i = 0; i < ARQ_MAX_OUTSTANDING; ++i) {
+        const TxSlot& slot = tx_slots_[i];
+        if (slot.state == TxState::OPEN && slot.round_bitmap != 0) {
+            deadline = now;
+            return true;
+        }
+    }
+    if (txQueuedCount() > 0 && remote_credits_ > 0 && txActiveCount() == 0) {
+        deadline = now;
+        return true;
+    }
+
+    bool found = false;
+    uint32_t best = 0;
+    for (uint8_t i = 0; i < ARQ_MAX_OUTSTANDING; ++i) {
+        const TxSlot& slot = tx_slots_[i];
+        if (slot.state != TxState::OPEN) {
+            continue;
+        }
+        const uint16_t full = expectedBitmap(slot.fragment_count);
+        if ((slot.acked_bitmap & full) == full) {
+            best = now;
+            found = true;
+            break;
+        }
+        if (slot.round_bitmap == 0) {
+            if (!found || static_cast<int32_t>(slot.retry_deadline - best) < 0) {
+                best = slot.retry_deadline;
+                found = true;
+            }
+        }
+    }
+    if (found) {
+        deadline = best;
+    }
+    return found;
+}
+
 uint8_t ArqEngine::currentCredits() const {
     const uint8_t egress = callbacks_.egress_capacity != nullptr ?
         callbacks_.egress_capacity(callbacks_.user) : ARQ_MAX_RX_DATAGRAMS;
@@ -258,12 +307,17 @@ bool ArqEngine::sendDataFragment(TxSlot& slot, uint8_t fragment_index) {
         return false;
     }
 
+    const uint16_t fragment_bit = static_cast<uint16_t>(1u << fragment_index);
+    const uint8_t flags =
+        (slot.round_bitmap & static_cast<uint16_t>(~fragment_bit)) == 0 ?
+        framing_v3::V3_DATA_FLAG_ROUND_END : 0;
+
     framing_v3::FragmentDescriptor fragments[framing_v3::V3_MAX_FRAGS];
     uint8_t fragment_count = 0;
     if (framing_v3::describeDatagram(slot.data,
                                      slot.len,
                                      slot.datagram_id,
-                                     0,
+                                     flags,
                                      txQueuedCount(),
                                      fragments,
                                      framing_v3::V3_MAX_FRAGS,
@@ -466,7 +520,9 @@ void ArqEngine::handleData(const framing_v3::DataHeader& header,
         return;
     }
 
-    queueRxAck(*slot, framing_v3::FailureStatus::NONE);
+    if ((header.flags & framing_v3::V3_DATA_FLAG_ROUND_END) != 0) {
+        queueRxAck(*slot, framing_v3::FailureStatus::NONE);
+    }
 }
 
 ArqEngine::RxSlot* ArqEngine::findRxSlot(uint16_t datagram_id) {

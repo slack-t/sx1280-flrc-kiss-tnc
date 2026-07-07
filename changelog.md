@@ -2,6 +2,45 @@
 
 ## 2026-07-07
 
+### WP-B bench tooling
+
+- Raised the Python host-side wrapped payload cap to 1280 bytes and made
+  `kiss_tun.py` default its optional TUN MTU to that cap.
+- Updated `raw_fragment_test.py` for v3 fragment sizing, 1280-byte default
+  sweeps, CRC32/SHA-256 logging, explicit duplicate detection, and a
+  `--stress-1280` shortcut for the 30 x 1280-byte zero-gap bench run.
+- Added serial-integrity boundary tests and
+  `docs/wp_b_phase_7_bench_tooling_20260707.md` with Phase 8 command lines.
+- Fixed the firmware KISS decoder capacity for generic-mode max payloads:
+  decoded KISS frames can now carry `1280 + 8` bytes for the serial-integrity
+  envelope while `PayloadFrame` remains capped at 1280 bytes. Added native
+  regression coverage for this wrapped max-frame case.
+- Completed the Phase 8 two-board hardware gate. During the gate, fixed v3
+  hardware convergence by deferring partial ARQ ACKs to round end, pacing v3 DATA
+  sends with the existing inter-fragment delay, increasing the host-to-radio
+  queue depth to 32 frames, and chunking USB CDC serial TX writes. Final
+  forward and reverse 30 x 1280-byte zero-gap runs delivered 30/30 unique
+  frames with no corruption, duplicates, missing frames, serial-integrity drops,
+  or ARQ retry-exhaustion counters. Documented results in
+  `docs/wp_b_bench_20260707.md`.
+
+### WP-B MAC integration
+
+- Bound the v3 `ArqEngine` into `macTask` for `GENERIC_FRAGMENTED` transport
+  while preserving the radio single-owner invariant.
+- Generic RF DATA/ACK traffic now uses v3 framing and selective-repeat ARQ;
+  legacy v2 RF traffic is silently discarded via version/type counters.
+- Mapped generic-mode heartbeat/heartbeat-ack to v3 CONTROL packets and kept
+  `NATIVE_PACKET` as the single-packet debug path.
+- Raised `TNC_PAYLOAD_MAX_LEN` to 1280 and moved the serial TX integrity wrapper
+  buffer out of task stack storage.
+- Extended `STATS` with v3/ARQ counters for version/type drops, retry
+  exhaustion, saturation, malformed input, credit withdrawal, allocation
+  failure, and TX completion.
+- Added `docs/wp_b_phase_6_mac_integration_20260707.md`. Verification:
+  `pio test -e native`, `pio run -e t3s3`, and
+  `pio run -e t3s3-serial-wdt` passed.
+
 ### WP-B v3 framing and ARQ native implementation
 
 - Added native-testable v3 framing (`FramingV3.h`) with DATA, ACK, CONTROL, and

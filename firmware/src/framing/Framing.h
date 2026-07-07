@@ -73,7 +73,7 @@ static constexpr uint8_t  FRAMING_ACK_HDR_LEN     = 11;
 static constexpr uint8_t  FRAMING_ACK_MASK_BYTES  = 4;
 static constexpr uint8_t  FRAMING_ACK_WINDOW_BITS = FRAMING_ACK_MASK_BYTES * 8u;
 static constexpr uint16_t FRAMING_SEQ_UNSET       = 0xFFFF;
-static constexpr uint16_t TNC_PAYLOAD_MAX_LEN     = 1024;
+static constexpr uint16_t TNC_PAYLOAD_MAX_LEN     = 1280;
 
 // Native packet: 2-byte header (version/type + payload_len), rest is payload.
 // Maximum single-packet payload for native transport mode.
@@ -87,7 +87,7 @@ static_assert(PACKET_MAX_LEN > FRAMING_NATIVE_HDR_LEN,
 static constexpr uint8_t FRAMING_FRAG_DATA =
     static_cast<uint8_t>(PACKET_MAX_LEN - FRAMING_DATA_HDR_LEN); // 114
 static constexpr uint8_t FRAMING_MAX_FRAGS = static_cast<uint8_t>(
-    (TNC_PAYLOAD_MAX_LEN + FRAMING_FRAG_DATA - 1u) / FRAMING_FRAG_DATA); // 9
+    (TNC_PAYLOAD_MAX_LEN + FRAMING_FRAG_DATA - 1u) / FRAMING_FRAG_DATA); // 12
 
 static_assert(FRAMING_MAX_FRAGS <= FRAMING_ACK_WINDOW_BITS,
               "ACK bitmap window must cover the maximum fragment count");

@@ -47,6 +47,9 @@ bool Kiss::decode(uint8_t byte, PayloadFrame& frame) {
     if (kissFrame.command != KISS_DATA_FRAME) {
         return false;
     }
+    if (kissFrame.len > TNC_PAYLOAD_MAX_LEN) {
+        return false;
+    }
     memcpy(frame.data, kissFrame.data, kissFrame.len);
     frame.len = kissFrame.len;
     return true;
@@ -95,7 +98,7 @@ KissDecodeResult Kiss::decodeFrameEx(uint8_t byte, KissFrame& frame) {
             } else if (byte == KISS_FESC) {
                 _state = State::ESCAPE;
             } else {
-                if (_len < TNC_PAYLOAD_MAX_LEN + 1) {
+                if (_len < KISS_FRAME_PAYLOAD_MAX_LEN + 1) {
                     _buf[_len++] = byte;
                 } else {
                     _overflow = true;
@@ -107,7 +110,7 @@ KissDecodeResult Kiss::decodeFrameEx(uint8_t byte, KissFrame& frame) {
             if (byte == KISS_TFEND || byte == KISS_TFESC) {
                 _state = State::IN_FRAME;
                 byte = (byte == KISS_TFEND) ? KISS_FEND : KISS_FESC;
-                if (_len < TNC_PAYLOAD_MAX_LEN + 1) {
+                if (_len < KISS_FRAME_PAYLOAD_MAX_LEN + 1) {
                     _buf[_len++] = byte;
                 } else {
                     _overflow = true;

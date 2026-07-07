@@ -446,6 +446,61 @@ void test_large_frame_roundtrip() {
     TEST_ASSERT_EQUAL_MEMORY(original.data, decoded.data, original.len);
 }
 
+void test_wrapped_generic_frame_max_payload_roundtrip() {
+    uint8_t payload[KISS_FRAME_PAYLOAD_MAX_LEN];
+    for (uint16_t i = 0; i < KISS_FRAME_PAYLOAD_MAX_LEN; i++) {
+        payload[i] = static_cast<uint8_t>((i * 17u) & 0xFFu);
+    }
+
+    uint8_t encBuf[KISS_FRAME_PAYLOAD_MAX_LEN * 2u + 3u];
+    size_t encLen = Kiss::encodeFrame(KISS_DATA_FRAME,
+                                      payload,
+                                      KISS_FRAME_PAYLOAD_MAX_LEN,
+                                      encBuf,
+                                      sizeof(encBuf));
+    TEST_ASSERT_NOT_EQUAL_UINT(0, encLen);
+
+    Kiss decoder;
+    KissFrame decoded;
+    bool complete = false;
+    for (size_t i = 0; i < encLen; i++) {
+        if (decoder.decodeFrame(encBuf[i], decoded)) {
+            complete = true;
+            break;
+        }
+    }
+
+    TEST_ASSERT_TRUE_MESSAGE(complete, "Wrapped generic frame not completed");
+    TEST_ASSERT_EQUAL_UINT8(KISS_DATA_FRAME, decoded.command);
+    TEST_ASSERT_EQUAL_UINT16(KISS_FRAME_PAYLOAD_MAX_LEN, decoded.len);
+    TEST_ASSERT_EQUAL_MEMORY(payload, decoded.data, KISS_FRAME_PAYLOAD_MAX_LEN);
+}
+
+void test_payload_decoder_rejects_wrapped_generic_frame() {
+    uint8_t payload[KISS_FRAME_PAYLOAD_MAX_LEN];
+    memset(payload, 0xA5, sizeof(payload));
+
+    uint8_t encBuf[KISS_FRAME_PAYLOAD_MAX_LEN * 2u + 3u];
+    size_t encLen = Kiss::encodeFrame(KISS_DATA_FRAME,
+                                      payload,
+                                      KISS_FRAME_PAYLOAD_MAX_LEN,
+                                      encBuf,
+                                      sizeof(encBuf));
+    TEST_ASSERT_NOT_EQUAL_UINT(0, encLen);
+
+    Kiss decoder;
+    PayloadFrame decoded;
+    bool complete = false;
+    for (size_t i = 0; i < encLen; i++) {
+        if (decoder.decode(encBuf[i], decoded)) {
+            complete = true;
+            break;
+        }
+    }
+
+    TEST_ASSERT_FALSE_MESSAGE(complete, "Payload decoder accepted wrapped generic frame");
+}
+
 void test_native_packet_roundtrip() {
     uint8_t payload[32];
     for (uint8_t i = 0; i < sizeof(payload); i++) { payload[i] = i; }
@@ -692,6 +747,8 @@ int main(int argc, char** argv) {
     RUN_TEST(test_link_ack_packet_roundtrip);
     RUN_TEST(test_back_to_back_double_fend);
     RUN_TEST(test_large_frame_roundtrip);
+    RUN_TEST(test_wrapped_generic_frame_max_payload_roundtrip);
+    RUN_TEST(test_payload_decoder_rejects_wrapped_generic_frame);
     RUN_TEST(test_fend_inside_escape_discards_frame_and_resyncs);
     RUN_TEST(test_non_zero_port_then_valid_frame_resyncs_cleanly);
     RUN_TEST(test_oversized_frame_then_valid_frame_resyncs_cleanly);

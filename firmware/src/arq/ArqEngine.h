@@ -63,9 +63,11 @@ public:
     uint8_t txActiveCount() const;
     uint8_t txQueuedCount() const;
     uint8_t rxActiveCount() const;
+    uint8_t pendingAckCount() const { return pending_ack_count_; }
     uint8_t txPoolFreeCount() const { return poolFreeCount(tx_pool_); }
     uint8_t rxPoolFreeCount() const { return poolFreeCount(rx_pool_); }
     bool hasPendingWork() const;
+    bool nextDeadline(uint32_t now, uint32_t& deadline) const;
 
 private:
     enum class TxState : uint8_t {

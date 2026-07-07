@@ -298,6 +298,48 @@ void test_retry_exhaustion_surfaces_failure_and_frees_buffer() {
     TEST_ASSERT_EQUAL_UINT8(DATAGRAM_POOL_CAPACITY, sim.a.engine.txPoolFreeCount());
 }
 
+void test_partial_ack_is_deferred_until_round_end() {
+    Endpoint a;
+    Endpoint b;
+    resetEndpoint(a);
+    resetEndpoint(b);
+
+    uint8_t data[300];
+    fillDatagram(data, sizeof(data), 0x1234);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ArqResult::OK),
+                            static_cast<uint8_t>(a.engine.onTxDatagram(data, sizeof(data))));
+
+    a.engine.onTick(0);
+    TEST_ASSERT_TRUE(a.outgoing_valid);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(framing_v3::PacketType::DATA),
+                            static_cast<uint8_t>(packetType(a.outgoing)));
+    b.engine.onRxPacket(a.outgoing, 0);
+    a.outgoing_valid = false;
+    b.engine.onTick(0);
+    TEST_ASSERT_FALSE(b.outgoing_valid);
+
+    a.engine.onTick(1);
+    TEST_ASSERT_TRUE(a.outgoing_valid);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(framing_v3::PacketType::DATA),
+                            static_cast<uint8_t>(packetType(a.outgoing)));
+    b.engine.onRxPacket(a.outgoing, 1);
+    a.outgoing_valid = false;
+    b.engine.onTick(1);
+    TEST_ASSERT_FALSE(b.outgoing_valid);
+
+    a.engine.onTick(2);
+    TEST_ASSERT_TRUE(a.outgoing_valid);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(framing_v3::PacketType::DATA),
+                            static_cast<uint8_t>(packetType(a.outgoing)));
+    b.engine.onRxPacket(a.outgoing, 2);
+    a.outgoing_valid = false;
+    b.engine.onTick(2);
+    TEST_ASSERT_TRUE(b.outgoing_valid);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(framing_v3::PacketType::ACK),
+                            static_cast<uint8_t>(packetType(b.outgoing)));
+    TEST_ASSERT_EQUAL_UINT16(1, b.delivered);
+}
+
 void test_30_by_1280_zero_gap_burst_delivers_all() {
     Sim sim(0xFEEDBEEFu);
     resetEndpoint(sim.a);
@@ -328,6 +370,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_credit_starvation_halts_new_data_but_not_retransmit_or_ack);
     RUN_TEST(test_egress_blocked_recovers_without_acknowledged_loss);
     RUN_TEST(test_retry_exhaustion_surfaces_failure_and_frees_buffer);
+    RUN_TEST(test_partial_ack_is_deferred_until_round_end);
     RUN_TEST(test_30_by_1280_zero_gap_burst_delivers_all);
     return UNITY_END();
 }

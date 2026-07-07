@@ -6,7 +6,7 @@ Core contract:
 
 - KISS command `0x00`: opaque data payloads
 - KISS command `0x0F`: private modem-control channel
-- Firmware payload cap: `1024` bytes per KISS data frame
+- Firmware payload cap: `1280` bytes per KISS data frame
 - Over-air transport: internal fragmentation plus selective-repeat ARQ
 
 What the firmware does:

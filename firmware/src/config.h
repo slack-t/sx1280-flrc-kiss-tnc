@@ -81,7 +81,7 @@
 #endif
 
 // ── FreeRTOS queue depths ────────────────────────────────────────────────────
-#define TX_QUEUE_DEPTH          8
+#define TX_QUEUE_DEPTH          32
 #define RX_QUEUE_DEPTH          8
 
 // ── Timing and Queue Buffering Parameters ────────────────────────────────────

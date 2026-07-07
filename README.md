@@ -142,7 +142,7 @@ sudo python3 pi-daemon/kiss_tun.py --port /dev/ttyACM0 --addr 10.0.0.2/30
 *   `--port`: Serial interface path (defaults to `/dev/ttyACM0`).
 *   `--addr`: Virtual IP allocation and subnet mask (e.g. `10.0.0.1/30`).
 *   `--name`: Linux interface name (defaults to `tun0`).
-*   `--mtu`: Network MTU size. Must match firmware `IP_MTU` (defaults to **492** with ARQ-enabled 4-byte fragment headers and 16-bit frame sequencing).
+*   `--mtu`: Network MTU size. Must be `<= 1280` for WP-B generic ARQ; `kiss_tun.py` defaults to **1280**.
 
 ### 4. Testing the TCP/IP Link
 Once both bridge daemons are active, verify the point-to-point link:

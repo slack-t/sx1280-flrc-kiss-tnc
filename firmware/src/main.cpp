@@ -50,6 +50,7 @@ static constexpr size_t SERIAL_WRAPPED_MAX_LEN =
 static constexpr size_t SERIAL_KISS_ENCODED_MAX =
     SERIAL_WRAPPED_MAX_LEN * 2u + 3u;
 static constexpr uint32_t SERIAL_TX_TIMEOUT_MS = 1000;
+static constexpr size_t SERIAL_TX_WRITE_CHUNK = 64;
 
 static void refreshModemStats() {
     auto& sm = StatsManager::instance();
@@ -261,13 +262,15 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
         if (snapshot.linkState == static_cast<uint8_t>(LinkState::READY))   lsName = "READY";
         else if (snapshot.linkState == static_cast<uint8_t>(LinkState::PROBING)) lsName = "PROBING";
 
-        char response[768];
+        char response[1024];
         int written = snprintf(response, sizeof(response),
                  "OK rx=%lu rxBytes=%lu arqDone=%lu arqMetaDrop=%lu arqIntDrop=%lu arqCrc=%lu "
                  "stxZero=%lu stxTimeout=%lu stxEncodeFail=%lu rxQWait=%lu "
                  "linkReady=%u linkState=%s linkAgeMs=%lu "
                  "hbTx=%lu hbAckRx=%lu dpTx=%lu drRx=%lu primerTO=%lu cqDrop=%lu "
                  "wuTx=%lu wuRx=%lu wuAck=%lu wuTO=%lu "
+                 "v3VerDrop=%lu v3TypeDrop=%lu arqV3Retry=%lu arqV3Sat=%lu "
+                 "arqV3Bad=%lu arqV3Credit=%lu arqV3Alloc=%lu arqV3TxDone=%lu "
                  "egress=%lu hwmMac=%lu hwmSrx=%lu hwmStx=%lu",
                  snapshot.rxCount,
                  snapshot.rxBytes,
@@ -292,6 +295,14 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
                  snapshot.arqWarmupRx,
                  snapshot.arqWarmupAckRx,
                  snapshot.arqWarmupTimeouts,
+                 snapshot.v3VersionDrops,
+                 snapshot.v3UnknownTypeDrops,
+                 snapshot.arqV3RetryExhaustion,
+                 snapshot.arqV3Saturation,
+                 snapshot.arqV3MalformedInput,
+                 snapshot.arqV3CreditWithdrawal,
+                 snapshot.arqV3AllocationFailure,
+                 snapshot.arqV3TxCompleted,
                  snapshot.rxEgressDeferrals,
                  snapshot.macStackHwm,
                  snapshot.serialRxStackHwm,
@@ -300,7 +311,9 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
         if (written > 0 && written < static_cast<int>(sizeof(response))) {
             snprintf(response + written, sizeof(response) - written,
                      " qTx=%lu/%lu qRx=%lu/%lu stxLock=%u stxActive=%u "
-                     "stxOff=%lu/%lu stxAge=%lu stxStall=%lu",
+                     "stxOff=%lu/%lu stxAge=%lu stxStall=%lu "
+                     "arqTx=%u/%u arqRx=%u arqAck=%u arqCred=%u "
+                     "arqPool=%u/%u arqDue=%lu",
                      snapshot.txQueueDepth,
                      snapshot.txQueueFree,
                      snapshot.rxQueueDepth,
@@ -310,7 +323,15 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
                      snapshot.serialTxOffset,
                      snapshot.serialTxFrameLen,
                      snapshot.serialTxLastProgressAgeMs,
-                     snapshot.serialTxStallMs);
+                     snapshot.serialTxStallMs,
+                     snapshot.arqV3TxActive,
+                     snapshot.arqV3TxQueued,
+                     snapshot.arqV3RxActive,
+                     snapshot.arqV3PendingAck,
+                     snapshot.arqV3RemoteCredits,
+                     snapshot.arqV3TxPoolFree,
+                     snapshot.arqV3RxPoolFree,
+                     snapshot.arqV3NextDeadlineMs);
         }
 #else
         (void)written;
@@ -615,6 +636,7 @@ static void serialRxTask(void*) {
 // Takes opaque payload frames from rxQueue, KISS-encodes, writes to USB CDC.
 static void serialTxTask(void*) {
     static uint8_t encBuf[SERIAL_KISS_ENCODED_MAX];
+    static uint8_t wrapperBuf[TNC_PAYLOAD_MAX_LEN + SERIAL_INTEGRITY_HDR_LEN];
     PayloadFrame frame;
     uint32_t last_hwm_ms = 0;
     snapshotStackHwm(&Stats::serialTxStackHwm);
@@ -623,7 +645,6 @@ static void serialTxTask(void*) {
         updateStackHwm(&Stats::serialTxStackHwm, last_hwm_ms);
         size_t encLen = 0;
         if (modemConfig.transportMode == TransportMode::GENERIC_FRAGMENTED) {
-            uint8_t wrapperBuf[TNC_PAYLOAD_MAX_LEN + SERIAL_INTEGRITY_HDR_LEN];
             uint32_t crc = framing::computeCrc32(frame.data, frame.len);
             buildSerialIntegrityHeader(wrapperBuf, frame.len, crc);
             memcpy(wrapperBuf + SERIAL_INTEGRITY_HDR_LEN, frame.data, frame.len);
@@ -656,7 +677,11 @@ static void serialTxTask(void*) {
         xSemaphoreTake(serialWriteMutex, portMAX_DELAY);
         noteSerialWriteLock(true);
         while (offset < encLen) {
-            size_t written = Serial.write(encBuf + offset, encLen - offset);
+            size_t toWrite = encLen - offset;
+            if (toWrite > SERIAL_TX_WRITE_CHUNK) {
+                toWrite = SERIAL_TX_WRITE_CHUNK;
+            }
+            size_t written = Serial.write(encBuf + offset, toWrite);
             if (written > 0) {
                 offset += written;
                 stall_report_ms = 0;
@@ -666,6 +691,13 @@ static void serialTxTask(void*) {
                     esp_task_wdt_reset();
                 }
 #endif
+                if (offset < encLen) {
+                    TickType_t delay_ticks = pdMS_TO_TICKS(1);
+                    if (delay_ticks == 0) {
+                        delay_ticks = 1;
+                    }
+                    vTaskDelay(delay_ticks);
+                }
             } else {
                 auto& sm = StatsManager::instance();
                 sm.lock();

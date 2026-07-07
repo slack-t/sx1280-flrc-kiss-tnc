@@ -21,7 +21,6 @@ import sys
 import threading
 import time
 import errno
-import errno
 import serial
 import serial_integrity
 
@@ -33,12 +32,11 @@ TFESC = 0xDD
 KISS_DATA_PORT = 0x00
 
 # Firmware payload cap for opaque KISS frames.
-FIRMWARE_PAYLOAD_CAP = 1016
+FIRMWARE_PAYLOAD_CAP = serial_integrity.SERIAL_INTEGRITY_MAX_PAYLOAD_LEN
 
-# Conservative default for the optional IP adapter. This stays below the
-# firmware payload cap and avoids pushing normal IP traffic straight into the
-# larger multi-fragment regimes by default.
-DEFAULT_MTU = 220
+# Default for the optional IP adapter. WP-B generic transport carries 1280-byte
+# serial-integrity-wrapped payloads over v3 selective-repeat ARQ.
+DEFAULT_MTU = FIRMWARE_PAYLOAD_CAP
 
 # Seconds to wait before retrying a lost serial connection
 RECONNECT_DELAY_S = 5
@@ -352,6 +350,8 @@ def main():
     parser.add_argument("--trace-file", default=None,
                         help="Write timestamped bridge events to this TSV file")
     args = parser.parse_args()
+    if args.mtu > FIRMWARE_PAYLOAD_CAP:
+        sys.exit(f"MTU {args.mtu} exceeds firmware payload cap {FIRMWARE_PAYLOAD_CAP}")
 
     try:
         import pytun

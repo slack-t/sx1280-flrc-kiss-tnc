@@ -58,6 +58,7 @@ static constexpr uint8_t V3_ACK_LEN = 11;
 static constexpr uint8_t V3_CONTROL_LEN = 6;
 static constexpr uint8_t V3_MGMT_HDR_LEN = 2;
 static constexpr uint8_t V3_CRC_LEN = 4;
+static constexpr uint8_t V3_DATA_FLAG_ROUND_END = 0x01;
 static constexpr uint8_t V3_FRAGMENT_PAYLOAD_MAX =
     static_cast<uint8_t>(PACKET_MAX_LEN - V3_DATA_HDR_LEN);
 static constexpr uint8_t V3_MGMT_PAYLOAD_MAX =
