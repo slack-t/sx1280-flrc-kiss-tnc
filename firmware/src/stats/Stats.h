@@ -103,6 +103,8 @@ struct Stats {
     uint32_t macStackHwm       = 0;  // bytes remaining at stack high-water mark
     uint32_t serialRxStackHwm  = 0;
     uint32_t serialTxStackHwm  = 0;
+    // Host-backpressure telemetry: only updated in SERIAL_TX_WDT_DIAGNOSTICS
+    // builds; stays at defaults otherwise.
     uint32_t txQueueDepth      = 0;
     uint32_t txQueueFree       = 0;
     uint32_t rxQueueDepth      = 0;

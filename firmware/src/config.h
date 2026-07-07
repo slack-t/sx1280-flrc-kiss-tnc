@@ -72,7 +72,10 @@
 #endif
 
 // Diagnostic-only: register serialTxTask with the task watchdog while it is
-// actively draining a USB CDC frame. Leave off for deployment images.
+// actively draining a USB CDC frame, and compile in the host-backpressure
+// telemetry (queue depths, serial write-lock state, TX progress/stall age in
+// STATS and on the OLED). The telemetry takes the stats mutex on the serial TX
+// hot path, so leave this off for deployment images.
 #ifndef SERIAL_TX_WDT_DIAGNOSTICS
 #define SERIAL_TX_WDT_DIAGNOSTICS 0
 #endif

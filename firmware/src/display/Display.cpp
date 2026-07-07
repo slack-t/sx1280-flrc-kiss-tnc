@@ -1,4 +1,5 @@
 #include "Display.h"
+#include "../config.h"
 #include "../config/ModemConfig.h"
 #include <stdio.h>
 #include <string.h>
@@ -188,12 +189,23 @@ void Display::update(const Stats& s) {
     _sprite.setCursor(2, 44);
     _sprite.print(buf);
 
+#if SERIAL_TX_WDT_DIAGNOSTICS
     // Host queue depth and USB write state for backpressure diagnosis.
     snprintf(buf, sizeof(buf), "Q:%lu/%lu W:%u S:%u",
              static_cast<unsigned long>(s.txQueueDepth),
              static_cast<unsigned long>(s.rxQueueDepth),
              s.serialWriteLockHeld,
              s.serialTxActive);
+#else
+    // MAC stack margin and host queue pressure.
+    char hwm[8];
+    char txWait[8];
+    char rxWait[8];
+    formatCount(hwm, sizeof(hwm), s.macStackHwm);
+    formatCount(txWait, sizeof(txWait), s.txQueueWaitCount);
+    formatCount(rxWait, sizeof(rxWait), s.rxQueueWaitCount);
+    snprintf(buf, sizeof(buf), "MAC:%s Q:%s/%s", hwm, txWait, rxWait);
+#endif
     _sprite.setCursor(2, 54);
     _sprite.print(buf);
 

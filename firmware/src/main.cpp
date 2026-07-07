@@ -41,7 +41,6 @@ static ModemConfigSource modemConfigSource = ModemConfigSource::DEFAULTS;
 static QueueHandle_t txQueue;   // PayloadFrame: SerialRX → MAC
 static QueueHandle_t rxQueue;   // PayloadFrame: MAC → SerialTX
 static SemaphoreHandle_t serialWriteMutex;
-static uint32_t serialTxLastProgressMs = 0;
 
 // HWCDC defaults to a 256-byte TX ring while a worst-case escaped generic KISS
 // frame is over 2 KiB. Keep one complete frame in the ring and submit each KISS
@@ -83,6 +82,12 @@ static void noteKissMalformedFrame(bool oversize) {
     }
     sm.unlock();
 }
+
+// Backpressure telemetry is diagnostic-only: the note*/refresh* hooks below
+// take the stats mutex on the serial TX hot path, so production images compile
+// them out entirely.
+#if SERIAL_TX_WDT_DIAGNOSTICS
+static uint32_t serialTxLastProgressMs = 0;
 
 static void refreshHostBackpressureStats() {
     const uint32_t now = millis();
@@ -148,6 +153,13 @@ static void noteSerialTxDone() {
     s.serialTxStallMs = 0;
     sm.unlock();
 }
+#else
+static inline void refreshHostBackpressureStats() {}
+static inline void noteSerialWriteLock(bool) {}
+static inline void noteSerialTxStart(size_t) {}
+static inline void noteSerialTxProgress(size_t) {}
+static inline void noteSerialTxDone() {}
+#endif  // SERIAL_TX_WDT_DIAGNOSTICS
 
 static void sendControlResponse(const char* text) {
     static uint8_t encBuf[1024];
@@ -172,8 +184,10 @@ static void sendControlResponse(const char* text) {
         }
         offset += written;
     }
-    xSemaphoreGive(serialWriteMutex);
+    // Clear the flag while still holding the mutex; clearing after the give
+    // races the next writer's noteSerialWriteLock(true) and reports a stale 0.
     noteSerialWriteLock(false);
+    xSemaphoreGive(serialWriteMutex);
 }
 
 static bool parseFloatValue(const char* value, float& out) {
@@ -248,15 +262,13 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
         else if (snapshot.linkState == static_cast<uint8_t>(LinkState::PROBING)) lsName = "PROBING";
 
         char response[768];
-        snprintf(response, sizeof(response),
+        int written = snprintf(response, sizeof(response),
                  "OK rx=%lu rxBytes=%lu arqDone=%lu arqMetaDrop=%lu arqIntDrop=%lu arqCrc=%lu "
                  "stxZero=%lu stxTimeout=%lu stxEncodeFail=%lu rxQWait=%lu "
                  "linkReady=%u linkState=%s linkAgeMs=%lu "
                  "hbTx=%lu hbAckRx=%lu dpTx=%lu drRx=%lu primerTO=%lu cqDrop=%lu "
                  "wuTx=%lu wuRx=%lu wuAck=%lu wuTO=%lu "
-                 "egress=%lu hwmMac=%lu hwmSrx=%lu hwmStx=%lu "
-                 "qTx=%lu/%lu qRx=%lu/%lu stxLock=%u stxActive=%u "
-                 "stxOff=%lu/%lu stxAge=%lu stxStall=%lu",
+                 "egress=%lu hwmMac=%lu hwmSrx=%lu hwmStx=%lu",
                  snapshot.rxCount,
                  snapshot.rxBytes,
                  snapshot.arqFramesCompleted,
@@ -283,17 +295,26 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
                  snapshot.rxEgressDeferrals,
                  snapshot.macStackHwm,
                  snapshot.serialRxStackHwm,
-                 snapshot.serialTxStackHwm,
-                 snapshot.txQueueDepth,
-                 snapshot.txQueueFree,
-                 snapshot.rxQueueDepth,
-                 snapshot.rxQueueFree,
-                 snapshot.serialWriteLockHeld,
-                 snapshot.serialTxActive,
-                 snapshot.serialTxOffset,
-                 snapshot.serialTxFrameLen,
-                 snapshot.serialTxLastProgressAgeMs,
-                 snapshot.serialTxStallMs);
+                 snapshot.serialTxStackHwm);
+#if SERIAL_TX_WDT_DIAGNOSTICS
+        if (written > 0 && written < static_cast<int>(sizeof(response))) {
+            snprintf(response + written, sizeof(response) - written,
+                     " qTx=%lu/%lu qRx=%lu/%lu stxLock=%u stxActive=%u "
+                     "stxOff=%lu/%lu stxAge=%lu stxStall=%lu",
+                     snapshot.txQueueDepth,
+                     snapshot.txQueueFree,
+                     snapshot.rxQueueDepth,
+                     snapshot.rxQueueFree,
+                     snapshot.serialWriteLockHeld,
+                     snapshot.serialTxActive,
+                     snapshot.serialTxOffset,
+                     snapshot.serialTxFrameLen,
+                     snapshot.serialTxLastProgressAgeMs,
+                     snapshot.serialTxStallMs);
+        }
+#else
+        (void)written;
+#endif
         sendControlResponse(response);
         return;
     }
@@ -668,8 +689,8 @@ static void serialTxTask(void*) {
                 vTaskDelay(delay_ticks);
             }
         }
-        xSemaphoreGive(serialWriteMutex);
         noteSerialWriteLock(false);
+        xSemaphoreGive(serialWriteMutex);
         noteSerialTxDone();
 #if SERIAL_TX_WDT_DIAGNOSTICS
         if (serialTxWdtActive) {

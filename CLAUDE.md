@@ -77,7 +77,7 @@ Battery ADC: GPIO1
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **sx1280-flrc-kiss-tnc** (1778 symbols, 3285 relationships, 96 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **sx1280-flrc-kiss-tnc** (1814 symbols, 3385 relationships, 97 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
