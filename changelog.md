@@ -2,6 +2,26 @@
 
 ## 2026-07-07
 
+### WP-B v3 framing and ARQ native implementation
+
+- Added native-testable v3 framing (`FramingV3.h`) with DATA, ACK, CONTROL, and
+  MGMT packet serializers/parsers, explicit little-endian packing, CRC32 checks,
+  1280-byte datagrams, and 12-fragment selective-repeat bitmap coverage.
+- Added v3 fragmentation/reassembly helpers with caller-owned buffers,
+  per-fragment metadata validation, duplicate detection, and bitmap completion
+  checks.
+- Added ARQ support primitives: fixed 8 x 1280-byte datagram pool and a
+  64-entry wraparound-aware duplicate window retaining final ACK/failure state.
+- Added a pure native `ArqEngine` with fixed storage, callback-driven sends and
+  delivery, credit withdrawal on blocked egress, retry exhaustion handling, and
+  duplicate re-ACK without re-delivery.
+- Added deterministic native tests for v3 framing, fragmentation, pool/window
+  support, lossy half-duplex ARQ simulation, and parser fuzzing. Verification:
+  `pio test -e native` passed 70/70, `pio test -e native-asan -f test_fuzz_v3`
+  passed 4/4, and `pio run -e t3s3` built successfully.
+- Added `docs/wp_b_phase_1_5_implementation_20260707.md` documenting scope,
+  verification, and deferred MAC integration.
+
 ### WP-A closure on production image
 
 - Fixed a serial write-lock telemetry race: `serialWriteLockHeld` is now
