@@ -67,7 +67,15 @@
 // ── Serial console / KISS transport discipline ──────────────────────────────
 // Set to 1 only when intentionally using the USB CDC port as a console rather
 // than as a pure KISS transport stream.
+#ifndef SERIAL_CONSOLE_LOGS
 #define SERIAL_CONSOLE_LOGS     0
+#endif
+
+// Diagnostic-only: register serialTxTask with the task watchdog while it is
+// actively draining a USB CDC frame. Leave off for deployment images.
+#ifndef SERIAL_TX_WDT_DIAGNOSTICS
+#define SERIAL_TX_WDT_DIAGNOSTICS 0
+#endif
 
 // ── FreeRTOS queue depths ────────────────────────────────────────────────────
 #define TX_QUEUE_DEPTH          8

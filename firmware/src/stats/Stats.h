@@ -103,6 +103,16 @@ struct Stats {
     uint32_t macStackHwm       = 0;  // bytes remaining at stack high-water mark
     uint32_t serialRxStackHwm  = 0;
     uint32_t serialTxStackHwm  = 0;
+    uint32_t txQueueDepth      = 0;
+    uint32_t txQueueFree       = 0;
+    uint32_t rxQueueDepth      = 0;
+    uint32_t rxQueueFree       = 0;
+    uint8_t  serialWriteLockHeld = 0;
+    uint8_t  serialTxActive    = 0;
+    uint32_t serialTxFrameLen  = 0;
+    uint32_t serialTxOffset    = 0;
+    uint32_t serialTxLastProgressAgeMs = 0xFFFFFFFFu;
+    uint32_t serialTxStallMs   = 0;
 };
 
 // Singleton wrapper with a FreeRTOS mutex.

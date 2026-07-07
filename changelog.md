@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-07-07
+
+### WP-A USB backpressure regression
+
+- Added a pure-KISS diagnostic firmware environment (`t3s3-serial-wdt`) that
+  keeps USB CDC free of console logs while optionally registering
+  `serialTxTask` with the task watchdog during frame drains.
+- Extended `STATS` and the OLED status row with host queue and serial TX
+  telemetry: queue depths, serial write-lock state, serial TX activity, frame
+  offset, and last-progress/stall age.
+- Re-ran the 30x1000B burst regression. The board recovered cleanly with
+  `qTx=0/8`, `qRx=0/8`, `stxLock=0`, `stxActive=0`, no serial TX zero writes or
+  timeouts, and valid receiver egress. The remaining loss is documented as
+  MAC/link burst overload rather than USB backpressure wedge.
+- Added `docs/wp_a_usb_backpressure_20260707.md` with commands, STATS output,
+  interpretation, and deployment notes.
+
 ## 2026-05-29
 
 ### ARQ Integrity v2

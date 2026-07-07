@@ -5,6 +5,9 @@
 #include <freertos/semphr.h>
 
 #include "config.h"
+#if SERIAL_TX_WDT_DIAGNOSTICS
+#include <esp_task_wdt.h>
+#endif
 #include "radio/Radio.h"
 #include "kiss/Kiss.h"
 #include "framing/Framing.h"
@@ -38,6 +41,7 @@ static ModemConfigSource modemConfigSource = ModemConfigSource::DEFAULTS;
 static QueueHandle_t txQueue;   // PayloadFrame: SerialRX → MAC
 static QueueHandle_t rxQueue;   // PayloadFrame: MAC → SerialTX
 static SemaphoreHandle_t serialWriteMutex;
+static uint32_t serialTxLastProgressMs = 0;
 
 // HWCDC defaults to a 256-byte TX ring while a worst-case escaped generic KISS
 // frame is over 2 KiB. Keep one complete frame in the ring and submit each KISS
@@ -80,6 +84,71 @@ static void noteKissMalformedFrame(bool oversize) {
     sm.unlock();
 }
 
+static void refreshHostBackpressureStats() {
+    const uint32_t now = millis();
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    Stats& s = sm.get();
+    if (txQueue != nullptr) {
+        s.txQueueDepth = uxQueueMessagesWaiting(txQueue);
+        s.txQueueFree = uxQueueSpacesAvailable(txQueue);
+    }
+    if (rxQueue != nullptr) {
+        s.rxQueueDepth = uxQueueMessagesWaiting(rxQueue);
+        s.rxQueueFree = uxQueueSpacesAvailable(rxQueue);
+    }
+    if (s.serialTxActive && serialTxLastProgressMs != 0) {
+        s.serialTxLastProgressAgeMs = now - serialTxLastProgressMs;
+        s.serialTxStallMs = s.serialTxLastProgressAgeMs;
+    } else {
+        s.serialTxLastProgressAgeMs = 0xFFFFFFFFu;
+        s.serialTxStallMs = 0;
+    }
+    sm.unlock();
+}
+
+static void noteSerialWriteLock(bool held) {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    sm.get().serialWriteLockHeld = held ? 1u : 0u;
+    sm.unlock();
+}
+
+static void noteSerialTxStart(size_t encLen) {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    Stats& s = sm.get();
+    serialTxLastProgressMs = millis();
+    s.serialTxActive = 1;
+    s.serialTxFrameLen = encLen;
+    s.serialTxOffset = 0;
+    s.serialTxLastProgressAgeMs = 0;
+    s.serialTxStallMs = 0;
+    sm.unlock();
+}
+
+static void noteSerialTxProgress(size_t offset) {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    Stats& s = sm.get();
+    serialTxLastProgressMs = millis();
+    s.serialTxOffset = offset;
+    s.serialTxLastProgressAgeMs = 0;
+    s.serialTxStallMs = 0;
+    sm.unlock();
+}
+
+static void noteSerialTxDone() {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    Stats& s = sm.get();
+    s.serialTxActive = 0;
+    s.serialTxOffset = s.serialTxFrameLen;
+    s.serialTxLastProgressAgeMs = 0xFFFFFFFFu;
+    s.serialTxStallMs = 0;
+    sm.unlock();
+}
+
 static void sendControlResponse(const char* text) {
     static uint8_t encBuf[1024];
     const size_t len = strlen(text);
@@ -93,6 +162,7 @@ static void sendControlResponse(const char* text) {
     }
 
     xSemaphoreTake(serialWriteMutex, portMAX_DELAY);
+    noteSerialWriteLock(true);
     size_t offset = 0;
     while (offset < encLen) {
         size_t written = Serial.write(encBuf + offset, encLen - offset);
@@ -103,6 +173,7 @@ static void sendControlResponse(const char* text) {
         offset += written;
     }
     xSemaphoreGive(serialWriteMutex);
+    noteSerialWriteLock(false);
 }
 
 static bool parseFloatValue(const char* value, float& out) {
@@ -166,6 +237,7 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
 
     if (strcasecmp(verb, "STATS") == 0) {
         mac::refreshLinkStats();
+        refreshHostBackpressureStats();
         auto& sm = StatsManager::instance();
         sm.lock();
         Stats snapshot = sm.get();
@@ -175,14 +247,16 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
         if (snapshot.linkState == static_cast<uint8_t>(LinkState::READY))   lsName = "READY";
         else if (snapshot.linkState == static_cast<uint8_t>(LinkState::PROBING)) lsName = "PROBING";
 
-        char response[512];
+        char response[768];
         snprintf(response, sizeof(response),
                  "OK rx=%lu rxBytes=%lu arqDone=%lu arqMetaDrop=%lu arqIntDrop=%lu arqCrc=%lu "
                  "stxZero=%lu stxTimeout=%lu stxEncodeFail=%lu rxQWait=%lu "
                  "linkReady=%u linkState=%s linkAgeMs=%lu "
                  "hbTx=%lu hbAckRx=%lu dpTx=%lu drRx=%lu primerTO=%lu cqDrop=%lu "
                  "wuTx=%lu wuRx=%lu wuAck=%lu wuTO=%lu "
-                 "egress=%lu hwmMac=%lu hwmSrx=%lu hwmStx=%lu",
+                 "egress=%lu hwmMac=%lu hwmSrx=%lu hwmStx=%lu "
+                 "qTx=%lu/%lu qRx=%lu/%lu stxLock=%u stxActive=%u "
+                 "stxOff=%lu/%lu stxAge=%lu stxStall=%lu",
                  snapshot.rxCount,
                  snapshot.rxBytes,
                  snapshot.arqFramesCompleted,
@@ -209,7 +283,17 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
                  snapshot.rxEgressDeferrals,
                  snapshot.macStackHwm,
                  snapshot.serialRxStackHwm,
-                 snapshot.serialTxStackHwm);
+                 snapshot.serialTxStackHwm,
+                 snapshot.txQueueDepth,
+                 snapshot.txQueueFree,
+                 snapshot.rxQueueDepth,
+                 snapshot.rxQueueFree,
+                 snapshot.serialWriteLockHeld,
+                 snapshot.serialTxActive,
+                 snapshot.serialTxOffset,
+                 snapshot.serialTxFrameLen,
+                 snapshot.serialTxLastProgressAgeMs,
+                 snapshot.serialTxStallMs);
         sendControlResponse(response);
         return;
     }
@@ -533,8 +617,15 @@ static void serialTxTask(void*) {
             sm.unlock();
             continue;
         }
+        noteSerialTxStart(encLen);
         size_t offset = 0;
         uint32_t stall_report_ms = 0;
+#if SERIAL_TX_WDT_DIAGNOSTICS
+        const bool serialTxWdtActive = (esp_task_wdt_add(nullptr) == ESP_OK);
+        if (serialTxWdtActive) {
+            esp_task_wdt_reset();
+        }
+#endif
 
         // Submit the complete KISS frame under one logical write lock. Do not
         // call HWCDC::flush(): in the pinned Arduino core a flush timeout marks
@@ -542,11 +633,18 @@ static void serialTxTask(void*) {
         // triggers the USB ISR and blocks as needed while the enlarged ring
         // drains.
         xSemaphoreTake(serialWriteMutex, portMAX_DELAY);
+        noteSerialWriteLock(true);
         while (offset < encLen) {
             size_t written = Serial.write(encBuf + offset, encLen - offset);
             if (written > 0) {
                 offset += written;
                 stall_report_ms = 0;
+                noteSerialTxProgress(offset);
+#if SERIAL_TX_WDT_DIAGNOSTICS
+                if (serialTxWdtActive) {
+                    esp_task_wdt_reset();
+                }
+#endif
             } else {
                 auto& sm = StatsManager::instance();
                 sm.lock();
@@ -571,6 +669,13 @@ static void serialTxTask(void*) {
             }
         }
         xSemaphoreGive(serialWriteMutex);
+        noteSerialWriteLock(false);
+        noteSerialTxDone();
+#if SERIAL_TX_WDT_DIAGNOSTICS
+        if (serialTxWdtActive) {
+            esp_task_wdt_delete(nullptr);
+        }
+#endif
     }
 }
 
@@ -580,6 +685,7 @@ static void displayTask(void*) {
     for (;;) {
         vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(DISPLAY_REFRESH_MS));
 
+        refreshHostBackpressureStats();
         auto& sm = StatsManager::instance();
         sm.lock();
         Stats snapshot = sm.get();
