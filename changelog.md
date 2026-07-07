@@ -2,6 +2,27 @@
 
 ## 2026-07-07
 
+### WP-A closure on production image
+
+- Fixed a serial write-lock telemetry race: `serialWriteLockHeld` is now
+  cleared before `serialWriteMutex` is released, so `stxLock` can no longer
+  read back a stale 0 while another writer holds the lock.
+- Gated all host-backpressure telemetry (queue depths, write-lock state, TX
+  progress/stall age in `STATS` and the OLED bottom row) behind
+  `SERIAL_TX_WDT_DIAGNOSTICS`. Production images drop the per-chunk stats-mutex
+  traffic on the serial TX hot path; the `t3s3-serial-wdt` env keeps the full
+  diagnostic surface. Production `STATS` ends at `hwmStx=`.
+- Re-ran the 30x1000B burst on production `t3s3` at `6a2d669`, both nodes: all
+  USB backpressure invariants hold (`stxZero=0`, `stxTimeout=0`, `rxQWait=0`,
+  `egress=0`), 16/30 payloads delivered with `valid=16 bad=0` and no
+  acknowledged loss. WP-A gate closed on the deployable artifact.
+- Documented the burst-loss mechanism: heartbeats are a minor aggravator only
+  (receiver heartbeats fire solely in >=500 ms gaps and never block data ACKs);
+  the dominant cause is half-duplex fragment/ACK collision exhausting the 6 ARQ
+  rounds under zero-gap bursts. Designated fix is WP-B/WP-C, not tuning of the
+  current protocol. Analysis appended to
+  `docs/wp_a_usb_backpressure_20260707.md`.
+
 ### WP-A USB backpressure regression
 
 - Added a pure-KISS diagnostic firmware environment (`t3s3-serial-wdt`) that
