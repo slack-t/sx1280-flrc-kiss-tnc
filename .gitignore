@@ -12,3 +12,6 @@ reports/
 # Submodule — tracked separately
 misc/tncattach/
 .gitnexus
+
+# Bench/test capture logs
+*.log

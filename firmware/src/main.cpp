@@ -2,6 +2,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/queue.h>
+#include <freertos/semphr.h>
 
 #include "config.h"
 #include "radio/Radio.h"
@@ -36,6 +37,16 @@ static ModemConfigSource modemConfigSource = ModemConfigSource::DEFAULTS;
 
 static QueueHandle_t txQueue;   // PayloadFrame: SerialRX → MAC
 static QueueHandle_t rxQueue;   // PayloadFrame: MAC → SerialTX
+static SemaphoreHandle_t serialWriteMutex;
+
+// HWCDC defaults to a 256-byte TX ring while a worst-case escaped generic KISS
+// frame is over 2 KiB. Keep one complete frame in the ring and submit each KISS
+// frame under one logical writer lock.
+static constexpr size_t SERIAL_WRAPPED_MAX_LEN =
+    TNC_PAYLOAD_MAX_LEN + SERIAL_INTEGRITY_HDR_LEN;
+static constexpr size_t SERIAL_KISS_ENCODED_MAX =
+    SERIAL_WRAPPED_MAX_LEN * 2u + 3u;
+static constexpr uint32_t SERIAL_TX_TIMEOUT_MS = 1000;
 
 static void refreshModemStats() {
     auto& sm = StatsManager::instance();
@@ -80,6 +91,8 @@ static void sendControlResponse(const char* text) {
     if (encLen == 0) {
         return;
     }
+
+    xSemaphoreTake(serialWriteMutex, portMAX_DELAY);
     size_t offset = 0;
     while (offset < encLen) {
         size_t written = Serial.write(encBuf + offset, encLen - offset);
@@ -89,6 +102,7 @@ static void sendControlResponse(const char* text) {
         }
         offset += written;
     }
+    xSemaphoreGive(serialWriteMutex);
 }
 
 static bool parseFloatValue(const char* value, float& out) {
@@ -384,18 +398,23 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
     sendControlResponse("OK saved");
 }
 
-// Rate-limited stack high-watermark telemetry for the calling task.
+// Stack high-watermark telemetry for the calling task.
+static void snapshotStackHwm(uint32_t Stats::* field) {
+    const uint32_t hwm = uxTaskGetStackHighWaterMark(nullptr);
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    sm.get().*field = hwm;
+    sm.unlock();
+}
+
+// Rate-limited variant for per-frame call sites.
 static void updateStackHwm(uint32_t Stats::* field, uint32_t& last_ms) {
     const uint32_t now = millis();
     if (now - last_ms < 1000) {
         return;
     }
     last_ms = now;
-    const uint32_t hwm = uxTaskGetStackHighWaterMark(nullptr);
-    auto& sm = StatsManager::instance();
-    sm.lock();
-    sm.get().*field = hwm;
-    sm.unlock();
+    snapshotStackHwm(field);
 }
 
 // ── Task: Serial RX ───────────────────────────────────────────────────────────
@@ -406,6 +425,7 @@ static void serialRxTask(void*) {
     static PayloadFrame frame;
     uint32_t last_rx_ms = 0;
     uint32_t last_hwm_ms = 0;
+    snapshotStackHwm(&Stats::serialRxStackHwm);
 
     for (;;) {
         int avail = Serial.available();
@@ -489,11 +509,10 @@ static void serialRxTask(void*) {
 // ── Task: Serial TX ───────────────────────────────────────────────────────────
 // Takes opaque payload frames from rxQueue, KISS-encodes, writes to USB CDC.
 static void serialTxTask(void*) {
-    // Worst-case KISS encoded size: 2 bytes per payload byte + 3 framing bytes
-    static constexpr size_t SERIAL_TX_CHUNK = 64;
-    static uint8_t encBuf[TNC_PAYLOAD_MAX_LEN * 2 + 3];
+    static uint8_t encBuf[SERIAL_KISS_ENCODED_MAX];
     PayloadFrame frame;
     uint32_t last_hwm_ms = 0;
+    snapshotStackHwm(&Stats::serialTxStackHwm);
     for (;;) {
         xQueueReceive(rxQueue, &frame, portMAX_DELAY);
         updateStackHwm(&Stats::serialTxStackHwm, last_hwm_ms);
@@ -517,17 +536,17 @@ static void serialTxTask(void*) {
         size_t offset = 0;
         uint32_t stall_report_ms = 0;
 
+        // Submit the complete KISS frame under one logical write lock. Do not
+        // call HWCDC::flush(): in the pinned Arduino core a flush timeout marks
+        // CDC disconnected and silently discards later frames. write() already
+        // triggers the USB ISR and blocks as needed while the enlarged ring
+        // drains.
+        xSemaphoreTake(serialWriteMutex, portMAX_DELAY);
         while (offset < encLen) {
-            const size_t chunk = (encLen - offset > SERIAL_TX_CHUNK)
-                ? SERIAL_TX_CHUNK
-                : (encLen - offset);
-            size_t written = Serial.write(encBuf + offset, chunk);
+            size_t written = Serial.write(encBuf + offset, encLen - offset);
             if (written > 0) {
                 offset += written;
                 stall_report_ms = 0;
-                if (offset < encLen) {
-                    vTaskDelay(1);
-                }
             } else {
                 auto& sm = StatsManager::instance();
                 sm.lock();
@@ -551,6 +570,7 @@ static void serialTxTask(void*) {
                 vTaskDelay(delay_ticks);
             }
         }
+        xSemaphoreGive(serialWriteMutex);
     }
 }
 
@@ -585,6 +605,10 @@ static void haltBoot(const char* what, int code) {
 
 // ── Arduino entry points ──────────────────────────────────────────────────────
 void setup() {
+    serialWriteMutex = xSemaphoreCreateMutex();
+    const size_t serialTxBufferSize =
+        Serial.setTxBufferSize(SERIAL_KISS_ENCODED_MAX);
+    Serial.setTxTimeoutMs(SERIAL_TX_TIMEOUT_MS);
     Serial.begin(0);   // USB CDC — baud rate is ignored by native USB
 
 #if SERIAL_CONSOLE_LOGS
@@ -618,6 +642,10 @@ void setup() {
     BOOT_LOG_LN("[main] Initializing SSD1306 OLED display...");
     display.begin();
     BOOT_LOG_LN("[main] Display initialized successfully.");
+    if (serialWriteMutex == nullptr ||
+        serialTxBufferSize < SERIAL_KISS_ENCODED_MAX) {
+        haltBoot("USB TX Init Fail", -94);
+    }
 
 #if SERIAL_CONSOLE_LOGS
     // Small delay to let the boot message be visible to the user.

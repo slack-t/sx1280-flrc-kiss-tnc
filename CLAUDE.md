@@ -31,12 +31,20 @@ pio test -e esp32s3
 ## Key Architecture
 
 **FreeRTOS task layout:**
-- `radioRxTask` / `radioTxTask` — pinned to core 1, own all SX1280 SPI access
-- `serialRxTask` / `serialTxTask` — core 0, own USB CDC read/write
-- `displayTask` — core 0, reads shared `Stats` struct every 500 ms
+- `macTask` (`src/mac/`) — pinned to core 1, **single owner of the radio**: all SX1280 TX/RX
+  state transitions, config apply, and band scans run here. Event-driven ARQ + link-control
+  state machine; watchdog-supervised.
+- `serialRxTask` / `serialTxTask` — core 0, own USB CDC read/write (shared `serialWriteMutex`
+  keeps control responses and data frames from interleaving on the wire)
+- `displayTask` — core 0, single-shot modem-config screen, then suspends
 
-**Data flow:** USB CDC → `serialRxTask` → KISS decode → `txQueue` → `radioTxTask` → SX1280.
-Reverse: DIO1 ISR → semaphore → `radioRxTask` → `rxQueue` → `serialTxTask` → KISS encode → USB CDC.
+**Data flow:** USB CDC → `serialRxTask` → KISS decode → `txQueue` → `macTask` → SX1280.
+Reverse: DIO1 ISR → semaphore → `macTask` → `rxQueue` → `serialTxTask` → KISS encode → USB CDC.
+Serial-side radio commands (SET/SCAN/DEFAULTS) never touch the radio directly — they go through
+`mac::requestApplyConfig()` / `mac::requestScanBand()`, executed in MAC context between frames.
+A completed inbound frame is enqueued to `rxQueue` **before** its final ACK is sent; if the queue
+is full the ACK is withheld (egress reservation), so USB backpressure causes retransmission,
+never acknowledged loss.
 
 **KISS framing** lives entirely in `src/kiss/`; it has no hardware dependency and is fully unit-testable on host.
 
@@ -69,7 +77,7 @@ Battery ADC: GPIO1
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **sx1280-flrc-kiss-tnc** (1588 symbols, 2813 relationships, 46 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **sx1280-flrc-kiss-tnc** (1778 symbols, 3285 relationships, 96 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
