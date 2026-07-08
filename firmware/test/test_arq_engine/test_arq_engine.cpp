@@ -423,6 +423,59 @@ void test_zero_credit_completion_ack_stall_recovers_via_probe() {
     TEST_ASSERT_EQUAL_UINT32(1, sim.a.engine.counters().credit_stall_probes);
 }
 
+void test_credit_withdrawal_paces_retries_without_exhaustion() {
+    Sim sim(0xBACC9E55u);
+    resetEndpoint(sim.a, 0, 1, 3, 5);
+
+    uint8_t data[64];
+    fillDatagram(data, sizeof(data), 0);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ArqResult::OK),
+                            static_cast<uint8_t>(sim.a.engine.onTxDatagram(data, sizeof(data))));
+
+    sim.a.outgoing_valid = false;
+    sim.a.engine.onTick(sim.now);
+    TEST_ASSERT_TRUE(sim.a.outgoing_valid);
+    TEST_ASSERT_EQUAL_UINT8(1, sim.a.engine.txActiveCount());
+
+    framing_v3::AckFrame ack;
+    ack.datagram_id = 0;
+    ack.fragment_bitmap = 0;
+    ack.receiver_credits = 0;
+    ack.failure = framing_v3::FailureStatus::CREDIT_WITHDRAWAL;
+    framing_v3::Packet ack_packet;
+
+    for (uint8_t i = 0; i < 8; ++i) {
+        TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(framing_v3::ParseResult::OK),
+                                static_cast<uint8_t>(framing_v3::buildAckPacket(ack_packet, ack)));
+        sim.a.engine.onRxPacket(ack_packet, sim.now);
+        TEST_ASSERT_EQUAL_UINT8(1, sim.a.engine.txActiveCount());
+        TEST_ASSERT_EQUAL_UINT32(0, sim.a.engine.counters().retry_exhaustion);
+
+        sim.a.outgoing_valid = false;
+        sim.a.engine.onTick(sim.now);
+        TEST_ASSERT_FALSE(sim.a.outgoing_valid);
+
+        uint32_t deadline = 0;
+        TEST_ASSERT_TRUE(sim.a.engine.nextDeadline(sim.now, deadline));
+        sim.now = deadline;
+        sim.a.engine.onTick(sim.now);
+        TEST_ASSERT_TRUE(sim.a.outgoing_valid);
+        TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(framing_v3::PacketType::DATA),
+                                static_cast<uint8_t>(packetType(sim.a.outgoing)));
+    }
+
+    ack.fragment_bitmap = 0x0001;
+    ack.receiver_credits = 1;
+    ack.failure = framing_v3::FailureStatus::NONE;
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(framing_v3::ParseResult::OK),
+                            static_cast<uint8_t>(framing_v3::buildAckPacket(ack_packet, ack)));
+    sim.a.engine.onRxPacket(ack_packet, sim.now);
+
+    TEST_ASSERT_EQUAL_UINT8(0, sim.a.engine.txActiveCount());
+    TEST_ASSERT_EQUAL_UINT32(1, sim.a.engine.counters().tx_completed);
+    TEST_ASSERT_EQUAL_UINT32(0, sim.a.engine.counters().retry_exhaustion);
+}
+
 void test_credit_restore_via_any_ack_short_circuits_probe() {
     Sim sim(0x5EEDC0DEu);
     resetEndpoint(sim.a);
@@ -486,6 +539,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_partial_ack_is_deferred_until_round_end);
     RUN_TEST(test_30_by_1280_zero_gap_burst_delivers_all);
     RUN_TEST(test_zero_credit_completion_ack_stall_recovers_via_probe);
+    RUN_TEST(test_credit_withdrawal_paces_retries_without_exhaustion);
     RUN_TEST(test_credit_restore_via_any_ack_short_circuits_probe);
     return UNITY_END();
 }

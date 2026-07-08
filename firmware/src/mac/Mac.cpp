@@ -1230,7 +1230,6 @@ void serviceTx(uint32_t now) {
                 refreshLinkStats();
                 postFrame(now);
             }
-            return;
         }
         s_arq.onTick(now);
         syncArqCounters();

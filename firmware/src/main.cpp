@@ -281,9 +281,10 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
                  "linkReady=%u linkState=%s linkAgeMs=%lu "
                  "hbTx=%lu hbAckRx=%lu dpTx=%lu drRx=%lu primerTO=%lu cqDrop=%lu "
                  "wuTx=%lu wuRx=%lu wuAck=%lu wuTO=%lu "
+                 "ackTx=%lu ackRx=%lu ackTxErr=%lu "
                  "v3VerDrop=%lu v3TypeDrop=%lu arqV3Retry=%lu arqV3Sat=%lu "
                  "arqV3Bad=%lu arqV3Credit=%lu arqV3Alloc=%lu arqV3TxDone=%lu "
-                 "arqV3Probe=%lu diagEgress=%u "
+                 "arqV3Probe=%lu arqTx=%u/%u arqRx=%u arqAck=%u arqCred=%u diagEgress=%u "
                  "egress=%lu hwmMac=%lu hwmSrx=%lu hwmStx=%lu",
                  snapshot.rxCount,
                  snapshot.rxBytes,
@@ -308,6 +309,9 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
                  snapshot.arqWarmupRx,
                  snapshot.arqWarmupAckRx,
                  snapshot.arqWarmupTimeouts,
+                 snapshot.arqAckTxCount,
+                 snapshot.arqAckRxCount,
+                 snapshot.arqAckTxErrors,
                  snapshot.v3VersionDrops,
                  snapshot.v3UnknownTypeDrops,
                  snapshot.arqV3RetryExhaustion,
@@ -317,6 +321,11 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
                  snapshot.arqV3AllocationFailure,
                  snapshot.arqV3TxCompleted,
                  snapshot.arqV3CreditProbes,
+                 snapshot.arqV3TxActive,
+                 snapshot.arqV3TxQueued,
+                 snapshot.arqV3RxActive,
+                 snapshot.arqV3PendingAck,
+                 snapshot.arqV3RemoteCredits,
                  static_cast<unsigned>(mac::diagnosticEgressMode()),
                  snapshot.rxEgressDeferrals,
                  snapshot.macStackHwm,

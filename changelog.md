@@ -45,6 +45,16 @@
   Full post-clear delivery completion is still open: the captured recovery run
   returned `arqV3TxDone=0`, so the next focus is receiver release/completion
   after a one-shot zero-credit ACK.
+- Closed the deterministic one-shot recovery issue. Generic-mode `serviceTx()`
+  now continues ticking the v3 ARQ engine while waiting for heartbeat ACKs, and
+  v3 `CREDIT_WITHDRAWAL` ACKs are treated as receiver backpressure instead of
+  packet loss: the sender clears the current round, waits the credit-stall
+  interval before probing again, and does not exhaust the slot while the peer is
+  actively replying. Added native regression coverage for repeated withdrawal
+  ACKs beyond the previous max-attempt failure point. Final held-open hardware
+  retest delivered both 1280-byte datagrams after `DIAG egress=open`:
+  receiver `rx=2 arqDone=2 ackTx=65 ackTxErr=2 arqV3Credit=18`; sender
+  `ackRx=19 arqV3Retry=0 arqV3TxDone=2`.
 
 ## 2026-07-07
 

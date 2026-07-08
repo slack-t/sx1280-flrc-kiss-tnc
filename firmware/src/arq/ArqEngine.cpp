@@ -117,7 +117,7 @@ void ArqEngine::onRxPacket(const framing_v3::Packet& packet, uint32_t now) {
             counters_.malformed_input++;
             return;
         }
-        handleAck(ack);
+        handleAck(ack, now);
         return;
     }
 
@@ -477,7 +477,7 @@ void ArqEngine::clearTxSlot(TxSlot& slot) {
     slot = TxSlot();
 }
 
-void ArqEngine::handleAck(const framing_v3::AckFrame& ack) {
+void ArqEngine::handleAck(const framing_v3::AckFrame& ack, uint32_t now) {
     remote_credits_ = clampCredits(ack.receiver_credits);
     for (uint8_t i = 0; i < ARQ_MAX_OUTSTANDING; ++i) {
         TxSlot& slot = tx_slots_[i];
@@ -486,7 +486,10 @@ void ArqEngine::handleAck(const framing_v3::AckFrame& ack) {
         }
         if (ack.failure == framing_v3::FailureStatus::CREDIT_WITHDRAWAL) {
             slot.acked_bitmap = static_cast<uint16_t>(slot.acked_bitmap & ack.fragment_bitmap);
-            slot.retry_deadline = 0;
+            slot.round_bitmap = 0;
+            slot.next_fragment = 0;
+            slot.attempts = 1;
+            slot.retry_deadline = now + config_.credit_stall_timeout_cycles;
             return;
         }
         slot.acked_bitmap = static_cast<uint16_t>(slot.acked_bitmap | ack.fragment_bitmap);

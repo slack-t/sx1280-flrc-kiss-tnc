@@ -129,7 +129,7 @@ private:
     void failTxSlot(TxSlot& slot);
     void completeTxSlot(TxSlot& slot);
     void clearTxSlot(TxSlot& slot);
-    void handleAck(const framing_v3::AckFrame& ack);
+    void handleAck(const framing_v3::AckFrame& ack, uint32_t now);
     void handleData(const framing_v3::DataHeader& header,
                     const uint8_t* payload,
                     uint32_t now);
