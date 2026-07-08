@@ -18,10 +18,24 @@
 - Verified on both boards: 30 × 1000 B zero-gap burst with a draining host —
   READY across all 18 STATS polls during and after the transfer, 30/30 frames
   delivered clean. Details in `docs/link_state_stability_20260708.md`.
-- Documented a pre-existing ARQ credit-starvation deadlock triggered by
-  sustained host egress backpressure (sender wedges with no retry deadline
-  and no credit recovery). This is the outstanding WP-B egress-blockage gate;
-  top follow-up before WP-C.
+- Fixed the pre-existing ARQ credit-starvation deadlock triggered by a
+  completion ACK carrying `receiver_credits=0`: when queued TX work remains and
+  nothing is in flight, the sender now arms a delayed zero-credit probe deadline
+  and opens one datagram after `RADIO_ARQ_CREDIT_PROBE_MS`. Added native
+  regression coverage and surfaced `arqV3Probe` in `STATS`.
+- Committed and flashed the fix as `2ba7b54` on both attached boards, then
+  reran the two-board 30 x 1280-byte zero-gap hardware gate in both directions.
+  Both directions delivered 30/30 unique frames with no corruption,
+  duplicates, missing frames, ARQ retry exhaustion, credit withdrawal,
+  allocation failure, or probe increments. Details appended to
+  `docs/wp_b_bench_20260707.md`.
+- Remaining pre-WP-C hardware follow-up: deliberately reproduce host egress
+  blockage and confirm the new `arqV3Probe` path unwedges the sender under
+  blocked-then-draining receiver conditions. Initial no-read-host attempts did
+  not produce a reliable proof harness: one run completed without credit
+  pressure, one queried stats before recovery, and one lost the useful counter
+  epoch. The next step is a deterministic receiver egress-block diagnostic mode
+  or command.
 
 ## 2026-07-07
 
