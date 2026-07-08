@@ -16,6 +16,7 @@ static constexpr uint8_t ARQ_MAX_ATTEMPTS_DEFAULT = 8;
 
 struct ArqConfig {
     uint32_t retry_timeout_cycles = 8;
+    uint32_t ack_turnaround_cycles = 0;
     uint32_t credit_stall_timeout_cycles = 64;
     uint8_t max_attempts = ARQ_MAX_ATTEMPTS_DEFAULT;
     uint8_t initial_remote_credits = ARQ_MAX_OUTSTANDING;
@@ -59,6 +60,7 @@ public:
     ArqResult onTxDatagram(const uint8_t* data, uint16_t len);
     void onRxPacket(const framing_v3::Packet& packet, uint32_t now);
     void onTick(uint32_t now);
+    bool flushPendingAck(uint32_t now);
 
     const ArqCounters& counters() const { return counters_; }
     uint8_t remoteCredits() const { return remote_credits_; }
@@ -102,6 +104,7 @@ private:
     struct PendingAck {
         bool valid = false;
         framing_v3::AckFrame ack;
+        uint32_t ready_deadline = 0;
     };
 
     ArqConfig config_;
@@ -120,8 +123,8 @@ private:
     uint32_t credit_probe_deadline_ = 0;
 
     uint8_t currentCredits() const;
-    bool enqueueAck(const framing_v3::AckFrame& ack);
-    bool sendPendingAck();
+    bool enqueueAck(const framing_v3::AckFrame& ack, uint32_t ready_deadline);
+    bool sendPendingAck(uint32_t now);
     bool sendDataFragment(TxSlot& slot, uint8_t fragment_index);
     bool trySendRetransmit(uint32_t now);
     bool trySendOpenData(uint32_t now);
@@ -136,12 +139,15 @@ private:
     RxSlot* findRxSlot(uint16_t datagram_id);
     RxSlot* allocateRxSlot(const framing_v3::DataHeader& header);
     void releaseRxSlot(RxSlot& slot);
-    bool tryCompleteRxSlot(RxSlot& slot);
-    bool tryCompleteRxSlots();
-    void queueRxAck(const RxSlot& slot, framing_v3::FailureStatus failure);
+    bool tryCompleteRxSlot(RxSlot& slot, uint32_t now);
+    bool tryCompleteRxSlots(uint32_t now);
+    void queueRxAck(const RxSlot& slot,
+                    framing_v3::FailureStatus failure,
+                    uint32_t now);
     void queueFailureAck(uint16_t datagram_id,
                          uint16_t bitmap,
-                         framing_v3::FailureStatus failure);
+                         framing_v3::FailureStatus failure,
+                         uint32_t now);
 };
 
 } // namespace arq

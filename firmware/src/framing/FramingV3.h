@@ -45,6 +45,12 @@ namespace framing_v3 {
 //   byte 1      opaque payload length
 //   bytes 2..N  opaque payload
 //   final 4 B   CRC32, little-endian
+//
+// All builders zero-pad packets to V3_MIN_RADIO_LEN: the SX1280 FLRC PHY
+// loses very short frames (measured at 325 kbps: 3-byte packets 100%,
+// 17-51 byte packets 35-50%; commit 91a9526). CRCs cover only the logical
+// packet bytes; parsers derive the logical length from the headers and
+// ignore trailing padding.
 
 static constexpr uint8_t V3_VERSION = 3;
 static constexpr uint8_t V3_VERSION_SHIFT = 4;
@@ -63,6 +69,9 @@ static constexpr uint8_t V3_FRAGMENT_PAYLOAD_MAX =
     static_cast<uint8_t>(PACKET_MAX_LEN - V3_DATA_HDR_LEN);
 static constexpr uint8_t V3_MGMT_PAYLOAD_MAX =
     static_cast<uint8_t>(PACKET_MAX_LEN - V3_MGMT_HDR_LEN - V3_CRC_LEN);
+// Minimum on-air frame length. Padding to the full radio frame is the only
+// empirically validated point on the short-frame loss curve.
+static constexpr uint8_t V3_MIN_RADIO_LEN = PACKET_MAX_LEN;
 
 static_assert(PACKET_MAX_LEN >= 127, "v3 framing expects 127-byte FLRC packets");
 static_assert(V3_DATA_HDR_LEN <= 13, "v3 DATA header budget exceeded");
@@ -294,6 +303,14 @@ inline uint32_t crcWithZeroedField(const uint8_t* data,
     return ~crc;
 }
 
+inline void padToMinRadioLen(Packet& pkt) {
+    if (pkt.len < V3_MIN_RADIO_LEN) {
+        memset(pkt.data + pkt.len, 0,
+               static_cast<size_t>(V3_MIN_RADIO_LEN - pkt.len));
+        pkt.len = V3_MIN_RADIO_LEN;
+    }
+}
+
 inline ParseResult validateCommon(const Packet& pkt, PacketType expected_type) {
     if (pkt.len < 1) {
         return ParseResult::TRUNCATED;
@@ -356,6 +373,7 @@ inline ParseResult buildDataPacket(Packet& pkt,
     }
     pkt.len = static_cast<uint8_t>(packet_len);
     writeLe32(pkt.data + 8, detail::crcWithZeroedField(pkt.data, pkt.len, 8));
+    detail::padToMinRadioLen(pkt);
     return ParseResult::OK;
 }
 
@@ -395,10 +413,8 @@ inline ParseResult parseDataPacket(const Packet& pkt,
     if (pkt.len < expected_len) {
         return ParseResult::TRUNCATED;
     }
-    if (pkt.len != expected_len) {
-        return ParseResult::BAD_LENGTH;
-    }
-    if (readLe32(pkt.data + 8) != detail::crcWithZeroedField(pkt.data, pkt.len, 8)) {
+    // Bytes beyond expected_len are radio padding, excluded from the CRC.
+    if (readLe32(pkt.data + 8) != detail::crcWithZeroedField(pkt.data, expected_len, 8)) {
         return ParseResult::BAD_CRC;
     }
 
@@ -419,6 +435,7 @@ inline ParseResult buildAckPacket(Packet& pkt, const AckFrame& ack) {
     memset(pkt.data + 7, 0, V3_CRC_LEN);
     pkt.len = V3_ACK_LEN;
     writeLe32(pkt.data + 7, detail::crcWithZeroedField(pkt.data, pkt.len, 7));
+    detail::padToMinRadioLen(pkt);
     return ParseResult::OK;
 }
 
@@ -430,14 +447,11 @@ inline ParseResult parseAckPacket(const Packet& pkt, AckFrame& ack) {
     if (pkt.len < V3_ACK_LEN) {
         return ParseResult::TRUNCATED;
     }
-    if (pkt.len != V3_ACK_LEN) {
-        return ParseResult::BAD_LENGTH;
-    }
     const FailureStatus status = static_cast<FailureStatus>(pkt.data[6]);
     if (!isKnownFailureStatus(status)) {
         return ParseResult::BAD_VALUE;
     }
-    if (readLe32(pkt.data + 7) != detail::crcWithZeroedField(pkt.data, pkt.len, 7)) {
+    if (readLe32(pkt.data + 7) != detail::crcWithZeroedField(pkt.data, V3_ACK_LEN, 7)) {
         return ParseResult::BAD_CRC;
     }
     ack.datagram_id = readLe16(pkt.data + 1);
@@ -456,6 +470,7 @@ inline ParseResult buildControlPacket(Packet& pkt, const ControlFrame& ctrl) {
     memset(pkt.data + 2, 0, V3_CRC_LEN);
     pkt.len = V3_CONTROL_LEN;
     writeLe32(pkt.data + 2, detail::crcWithZeroedField(pkt.data, pkt.len, 2));
+    detail::padToMinRadioLen(pkt);
     return ParseResult::OK;
 }
 
@@ -467,14 +482,11 @@ inline ParseResult parseControlPacket(const Packet& pkt, ControlFrame& ctrl) {
     if (pkt.len < V3_CONTROL_LEN) {
         return ParseResult::TRUNCATED;
     }
-    if (pkt.len != V3_CONTROL_LEN) {
-        return ParseResult::BAD_LENGTH;
-    }
     const ControlSubtype subtype = static_cast<ControlSubtype>(pkt.data[1]);
     if (!isKnownControlSubtype(subtype)) {
         return ParseResult::BAD_VALUE;
     }
-    if (readLe32(pkt.data + 2) != detail::crcWithZeroedField(pkt.data, pkt.len, 2)) {
+    if (readLe32(pkt.data + 2) != detail::crcWithZeroedField(pkt.data, V3_CONTROL_LEN, 2)) {
         return ParseResult::BAD_CRC;
     }
     ctrl.subtype = subtype;
@@ -498,6 +510,7 @@ inline ParseResult buildMgmtPacket(Packet& pkt, const MgmtFrame& mgmt) {
     pkt.len = static_cast<uint8_t>(crc_offset + V3_CRC_LEN);
     writeLe32(pkt.data + crc_offset,
               detail::crcWithZeroedField(pkt.data, pkt.len, crc_offset));
+    detail::padToMinRadioLen(pkt);
     return ParseResult::OK;
 }
 
@@ -518,12 +531,9 @@ inline ParseResult parseMgmtPacket(const Packet& pkt, MutableMgmtFrame& mgmt) {
     if (pkt.len < expected_len) {
         return ParseResult::TRUNCATED;
     }
-    if (pkt.len != expected_len) {
-        return ParseResult::BAD_LENGTH;
-    }
     const size_t crc_offset = static_cast<size_t>(V3_MGMT_HDR_LEN + payload_len);
     if (readLe32(pkt.data + crc_offset) !=
-        detail::crcWithZeroedField(pkt.data, pkt.len, crc_offset)) {
+        detail::crcWithZeroedField(pkt.data, expected_len, crc_offset)) {
         return ParseResult::BAD_CRC;
     }
     if (payload_len > mgmt.payload_capacity) {

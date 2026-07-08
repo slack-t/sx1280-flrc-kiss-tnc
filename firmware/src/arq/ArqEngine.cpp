@@ -143,11 +143,11 @@ void ArqEngine::onRxPacket(const framing_v3::Packet& packet, uint32_t now) {
 }
 
 void ArqEngine::onTick(uint32_t now) {
-    if (tryCompleteRxSlots()) {
-        sendPendingAck();
+    if (tryCompleteRxSlots(now)) {
+        sendPendingAck(now);
         return;
     }
-    if (sendPendingAck()) {
+    if (sendPendingAck(now)) {
         return;
     }
     if (trySendRetransmit(now)) {
@@ -157,6 +157,10 @@ void ArqEngine::onTick(uint32_t now) {
         return;
     }
     (void)tryOpenQueued(now);
+}
+
+bool ArqEngine::flushPendingAck(uint32_t now) {
+    return sendPendingAck(now);
 }
 
 uint8_t ArqEngine::txActiveCount() const {
@@ -196,7 +200,7 @@ bool ArqEngine::hasPendingWork() const {
 
 bool ArqEngine::nextDeadline(uint32_t now, uint32_t& deadline) const {
     if (pending_ack_count_ > 0) {
-        deadline = now;
+        deadline = pending_acks_[0].ready_deadline;
         return true;
     }
     for (uint8_t i = 0; i < ARQ_MAX_RX_DATAGRAMS; ++i) {
@@ -267,11 +271,12 @@ uint8_t ArqEngine::currentCredits() const {
     return clampCredits(credits);
 }
 
-bool ArqEngine::enqueueAck(const framing_v3::AckFrame& ack) {
+bool ArqEngine::enqueueAck(const framing_v3::AckFrame& ack, uint32_t ready_deadline) {
     for (uint8_t i = 0; i < pending_ack_count_; ++i) {
         if (pending_acks_[i].valid &&
             pending_acks_[i].ack.datagram_id == ack.datagram_id) {
             pending_acks_[i].ack = ack;
+            pending_acks_[i].ready_deadline = ready_deadline;
             return true;
         }
     }
@@ -282,12 +287,16 @@ bool ArqEngine::enqueueAck(const framing_v3::AckFrame& ack) {
     }
     pending_acks_[pending_ack_count_].valid = true;
     pending_acks_[pending_ack_count_].ack = ack;
+    pending_acks_[pending_ack_count_].ready_deadline = ready_deadline;
     pending_ack_count_++;
     return true;
 }
 
-bool ArqEngine::sendPendingAck() {
+bool ArqEngine::sendPendingAck(uint32_t now) {
     if (pending_ack_count_ == 0 || callbacks_.send_packet == nullptr) {
+        return false;
+    }
+    if (static_cast<int32_t>(now - pending_acks_[0].ready_deadline) < 0) {
         return false;
     }
 
@@ -505,7 +514,6 @@ void ArqEngine::handleAck(const framing_v3::AckFrame& ack, uint32_t now) {
 void ArqEngine::handleData(const framing_v3::DataHeader& header,
                            const uint8_t* payload,
                            uint32_t now) {
-    (void)now;
     DuplicateAckState duplicate_ack;
     if (duplicateWindowFind(duplicate_window_, header.datagram_id, &duplicate_ack)) {
         counters_.duplicate_suppressed++;
@@ -514,7 +522,7 @@ void ArqEngine::handleData(const framing_v3::DataHeader& header,
         ack.fragment_bitmap = duplicate_ack.fragment_bitmap;
         ack.receiver_credits = currentCredits();
         ack.failure = duplicate_ack.failure;
-        (void)enqueueAck(ack);
+        (void)enqueueAck(ack, now + config_.ack_turnaround_cycles);
         return;
     }
 
@@ -525,7 +533,8 @@ void ArqEngine::handleData(const framing_v3::DataHeader& header,
     if (slot == nullptr) {
         queueFailureAck(header.datagram_id,
                         0,
-                        framing_v3::FailureStatus::ALLOCATION_FAILURE);
+                        framing_v3::FailureStatus::ALLOCATION_FAILURE,
+                        now);
         counters_.allocation_failure++;
         return;
     }
@@ -539,22 +548,23 @@ void ArqEngine::handleData(const framing_v3::DataHeader& header,
         counters_.malformed_input++;
         queueFailureAck(header.datagram_id,
                         slot->reassembly.received_bitmap,
-                        framing_v3::FailureStatus::MALFORMED_INPUT);
+                        framing_v3::FailureStatus::MALFORMED_INPUT,
+                        now);
         return;
     }
 
     if (framing_v3::reassemblyIsComplete(slot->reassembly)) {
-        if (tryCompleteRxSlot(*slot)) {
+        if (tryCompleteRxSlot(*slot, now)) {
             return;
         }
         slot->complete_waiting_egress = true;
         counters_.credit_withdrawal++;
-        queueRxAck(*slot, framing_v3::FailureStatus::CREDIT_WITHDRAWAL);
+        queueRxAck(*slot, framing_v3::FailureStatus::CREDIT_WITHDRAWAL, now);
         return;
     }
 
     if ((header.flags & framing_v3::V3_DATA_FLAG_ROUND_END) != 0) {
-        queueRxAck(*slot, framing_v3::FailureStatus::NONE);
+        queueRxAck(*slot, framing_v3::FailureStatus::NONE, now);
     }
 }
 
@@ -597,7 +607,7 @@ void ArqEngine::releaseRxSlot(RxSlot& slot) {
     slot = RxSlot();
 }
 
-bool ArqEngine::tryCompleteRxSlot(RxSlot& slot) {
+bool ArqEngine::tryCompleteRxSlot(RxSlot& slot, uint32_t now) {
     if (!framing_v3::reassemblyIsComplete(slot.reassembly)) {
         return false;
     }
@@ -622,24 +632,26 @@ bool ArqEngine::tryCompleteRxSlot(RxSlot& slot) {
     ack.fragment_bitmap = duplicate_ack.fragment_bitmap;
     ack.receiver_credits = currentCredits();
     ack.failure = framing_v3::FailureStatus::NONE;
-    (void)enqueueAck(ack);
+    (void)enqueueAck(ack, now + config_.ack_turnaround_cycles);
 
     counters_.delivered++;
     releaseRxSlot(slot);
     return true;
 }
 
-bool ArqEngine::tryCompleteRxSlots() {
+bool ArqEngine::tryCompleteRxSlots(uint32_t now) {
     for (uint8_t i = 0; i < ARQ_MAX_RX_DATAGRAMS; ++i) {
         if (rx_slots_[i].active && rx_slots_[i].complete_waiting_egress &&
-            tryCompleteRxSlot(rx_slots_[i])) {
+            tryCompleteRxSlot(rx_slots_[i], now)) {
             return true;
         }
     }
     return false;
 }
 
-void ArqEngine::queueRxAck(const RxSlot& slot, framing_v3::FailureStatus failure) {
+void ArqEngine::queueRxAck(const RxSlot& slot,
+                           framing_v3::FailureStatus failure,
+                           uint32_t now) {
     framing_v3::AckFrame ack;
     ack.datagram_id = slot.reassembly.datagram_id;
     ack.fragment_bitmap = slot.reassembly.received_bitmap;
@@ -652,18 +664,19 @@ void ArqEngine::queueRxAck(const RxSlot& slot, framing_v3::FailureStatus failure
     ack.receiver_credits = failure == framing_v3::FailureStatus::CREDIT_WITHDRAWAL ?
         0 : currentCredits();
     ack.failure = failure;
-    (void)enqueueAck(ack);
+    (void)enqueueAck(ack, now + config_.ack_turnaround_cycles);
 }
 
 void ArqEngine::queueFailureAck(uint16_t datagram_id,
                                 uint16_t bitmap,
-                                framing_v3::FailureStatus failure) {
+                                framing_v3::FailureStatus failure,
+                                uint32_t now) {
     framing_v3::AckFrame ack;
     ack.datagram_id = datagram_id;
     ack.fragment_bitmap = bitmap;
     ack.receiver_credits = currentCredits();
     ack.failure = failure;
-    (void)enqueueAck(ack);
+    (void)enqueueAck(ack, now + config_.ack_turnaround_cycles);
 }
 
 } // namespace arq

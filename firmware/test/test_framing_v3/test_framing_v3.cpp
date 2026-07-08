@@ -189,12 +189,70 @@ void test_data_corrupt_crc_rejected() {
     Packet pkt;
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ParseResult::OK),
                             static_cast<uint8_t>(buildDataPacket(pkt, out, payload)));
-    pkt.data[pkt.len - 1] ^= 0x80u;
+    // Corrupt the payload byte (logical packet), not the trailing radio padding.
+    pkt.data[V3_DATA_HDR_LEN] ^= 0x80u;
 
     DataHeader in;
     const uint8_t* decoded_payload = nullptr;
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ParseResult::BAD_CRC),
                             static_cast<uint8_t>(parseDataPacket(pkt, in, decoded_payload)));
+}
+
+void test_all_packet_types_padded_to_min_radio_len() {
+    uint8_t payload[1] = {0x42};
+    DataHeader header = makeHeader(1);
+    Packet pkt;
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ParseResult::OK),
+                            static_cast<uint8_t>(buildDataPacket(pkt, header, payload)));
+    TEST_ASSERT_EQUAL_UINT8(V3_MIN_RADIO_LEN, pkt.len);
+
+    AckFrame ack;
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ParseResult::OK),
+                            static_cast<uint8_t>(buildAckPacket(pkt, ack)));
+    TEST_ASSERT_EQUAL_UINT8(V3_MIN_RADIO_LEN, pkt.len);
+
+    ControlFrame ctrl;
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ParseResult::OK),
+                            static_cast<uint8_t>(buildControlPacket(pkt, ctrl)));
+    TEST_ASSERT_EQUAL_UINT8(V3_MIN_RADIO_LEN, pkt.len);
+
+    MgmtFrame mgmt;
+    mgmt.payload = payload;
+    mgmt.payload_len = 1;
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ParseResult::OK),
+                            static_cast<uint8_t>(buildMgmtPacket(pkt, mgmt)));
+    TEST_ASSERT_EQUAL_UINT8(V3_MIN_RADIO_LEN, pkt.len);
+}
+
+void test_parse_tolerates_any_padding_length_and_content() {
+    AckFrame out;
+    out.datagram_id = 0x4242;
+    out.fragment_bitmap = 0x0007u;
+    out.receiver_credits = 5;
+    out.failure = FailureStatus::NONE;
+
+    Packet pkt;
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ParseResult::OK),
+                            static_cast<uint8_t>(buildAckPacket(pkt, out)));
+
+    for (uint8_t len = V3_ACK_LEN; len <= V3_MIN_RADIO_LEN; ++len) {
+        Packet received = pkt;
+        received.len = len;
+        if (len > V3_ACK_LEN) {
+            // Padding content must not matter — it is not CRC-protected.
+            received.data[len - 1] = 0xA5u;
+        }
+        AckFrame in;
+        TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ParseResult::OK),
+                                static_cast<uint8_t>(parseAckPacket(received, in)));
+        TEST_ASSERT_EQUAL_UINT16(out.datagram_id, in.datagram_id);
+    }
+
+    Packet truncated = pkt;
+    truncated.len = V3_ACK_LEN - 1u;
+    AckFrame in;
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ParseResult::TRUNCATED),
+                            static_cast<uint8_t>(parseAckPacket(truncated, in)));
 }
 
 void test_datagram_length_edges() {
@@ -295,6 +353,8 @@ int main(int argc, char** argv) {
     RUN_TEST(test_data_corrupt_version_returns_distinct_code);
     RUN_TEST(test_unknown_packet_type_rejected);
     RUN_TEST(test_data_corrupt_crc_rejected);
+    RUN_TEST(test_all_packet_types_padded_to_min_radio_len);
+    RUN_TEST(test_parse_tolerates_any_padding_length_and_content);
     RUN_TEST(test_datagram_length_edges);
     RUN_TEST(test_parse_rejects_datagram_length_zero_and_1281);
     RUN_TEST(test_fragment_count_edges);

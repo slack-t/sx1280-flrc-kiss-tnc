@@ -104,6 +104,7 @@ static void resetEndpoint(Endpoint& endpoint,
 
     ArqConfig config;
     config.retry_timeout_cycles = retry_timeout_cycles;
+    config.ack_turnaround_cycles = 4;
     config.max_attempts = max_attempts;
     config.initial_remote_credits = initial_remote_credits;
     config.initial_datagram_id = initial_datagram_id;
@@ -334,10 +335,44 @@ void test_partial_ack_is_deferred_until_round_end() {
     b.engine.onRxPacket(a.outgoing, 2);
     a.outgoing_valid = false;
     b.engine.onTick(2);
+    TEST_ASSERT_FALSE(b.outgoing_valid);
+    b.engine.onTick(6);
     TEST_ASSERT_TRUE(b.outgoing_valid);
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(framing_v3::PacketType::ACK),
                             static_cast<uint8_t>(packetType(b.outgoing)));
     TEST_ASSERT_EQUAL_UINT16(1, b.delivered);
+}
+
+void test_single_fragment_completion_ack_flushes_after_turnaround() {
+    Endpoint a;
+    Endpoint b;
+    resetEndpoint(a);
+    resetEndpoint(b);
+
+    uint8_t data[64];
+    fillDatagram(data, sizeof(data), 0x51A1);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ArqResult::OK),
+                            static_cast<uint8_t>(a.engine.onTxDatagram(data, sizeof(data))));
+
+    a.engine.onTick(0);
+    TEST_ASSERT_TRUE(a.outgoing_valid);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(framing_v3::PacketType::DATA),
+                            static_cast<uint8_t>(packetType(a.outgoing)));
+
+    b.engine.onRxPacket(a.outgoing, 0);
+    TEST_ASSERT_FALSE(b.outgoing_valid);
+    TEST_ASSERT_EQUAL_UINT8(1, b.engine.pendingAckCount());
+    TEST_ASSERT_FALSE(b.engine.flushPendingAck(3));
+    TEST_ASSERT_TRUE(b.engine.flushPendingAck(4));
+    TEST_ASSERT_TRUE(b.outgoing_valid);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(framing_v3::PacketType::ACK),
+                            static_cast<uint8_t>(packetType(b.outgoing)));
+    TEST_ASSERT_EQUAL_UINT16(1, b.delivered);
+
+    a.outgoing_valid = false;
+    a.engine.onRxPacket(b.outgoing, 0);
+    TEST_ASSERT_EQUAL_UINT8(0, a.engine.txActiveCount());
+    TEST_ASSERT_EQUAL_UINT32(1, a.engine.counters().tx_completed);
 }
 
 void test_30_by_1280_zero_gap_burst_delivers_all() {
@@ -537,6 +572,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_egress_blocked_recovers_without_acknowledged_loss);
     RUN_TEST(test_retry_exhaustion_surfaces_failure_and_frees_buffer);
     RUN_TEST(test_partial_ack_is_deferred_until_round_end);
+    RUN_TEST(test_single_fragment_completion_ack_flushes_after_turnaround);
     RUN_TEST(test_30_by_1280_zero_gap_burst_delivers_all);
     RUN_TEST(test_zero_credit_completion_ack_stall_recovers_via_probe);
     RUN_TEST(test_credit_withdrawal_paces_retries_without_exhaustion);

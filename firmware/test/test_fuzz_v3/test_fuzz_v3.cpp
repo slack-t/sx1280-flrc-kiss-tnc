@@ -105,18 +105,18 @@ static void rewriteDataCrc(Packet& packet) {
 }
 
 static void rewriteAckCrc(Packet& packet) {
-    writeLe32(packet.data + 7, detail::crcWithZeroedField(packet.data, packet.len, 7));
+    writeLe32(packet.data + 7, detail::crcWithZeroedField(packet.data, V3_ACK_LEN, 7));
 }
 
 static void rewriteControlCrc(Packet& packet) {
-    writeLe32(packet.data + 2, detail::crcWithZeroedField(packet.data, packet.len, 2));
+    writeLe32(packet.data + 2, detail::crcWithZeroedField(packet.data, V3_CONTROL_LEN, 2));
 }
 
 static void rewriteMgmtCrc(Packet& packet) {
     const uint8_t payload_len = packet.data[1];
     const size_t crc_offset = static_cast<size_t>(V3_MGMT_HDR_LEN + payload_len);
     writeLe32(packet.data + crc_offset,
-              detail::crcWithZeroedField(packet.data, packet.len, crc_offset));
+              detail::crcWithZeroedField(packet.data, crc_offset + V3_CRC_LEN, crc_offset));
 }
 
 static Packet validDataPacket(uint16_t datagram_len = 115) {
@@ -219,12 +219,14 @@ void test_crafted_parser_rejection_vectors() {
                             static_cast<uint8_t>(parseByType(short_data)));
     assertEngineMalformedForRejected(short_data);
 
-    Packet bad_length = validDataPacket(1);
-    bad_length.data[bad_length.len] = 0;
-    bad_length.len = static_cast<uint8_t>(bad_length.len + 1u);
-    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ParseResult::BAD_LENGTH),
-                            static_cast<uint8_t>(parseByType(bad_length)));
-    assertEngineMalformedForRejected(bad_length);
+    // Bytes past the logical packet are radio padding: any padding length
+    // and content must parse cleanly.
+    Packet padded = validDataPacket(1);
+    TEST_ASSERT_EQUAL_UINT8(V3_MIN_RADIO_LEN, padded.len);
+    padded.len = static_cast<uint8_t>(V3_DATA_HDR_LEN + 1u + 3u);
+    padded.data[padded.len - 1u] = 0xEEu;
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ParseResult::OK),
+                            static_cast<uint8_t>(parseByType(padded)));
 
     Packet too_large = data;
     writeLe16(too_large.data + 6, 1281);
@@ -269,7 +271,7 @@ void test_crafted_parser_rejection_vectors() {
                             static_cast<uint8_t>(parseMgmtPacket(mgmt, out)));
 
     Packet bad_mgmt_crc = mgmt;
-    bad_mgmt_crc.data[bad_mgmt_crc.len - 1u] ^= 0x80u;
+    bad_mgmt_crc.data[V3_MGMT_HDR_LEN] ^= 0x80u;  // payload byte, CRC-covered
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ParseResult::BAD_CRC),
                             static_cast<uint8_t>(parseByType(bad_mgmt_crc)));
     assertEngineMalformedForRejected(bad_mgmt_crc);
@@ -282,9 +284,17 @@ void test_bad_crc_is_never_accepted_for_each_packet_type() {
         validControlPacket(),
         validMgmtPacket(),
     };
+    // Last byte of each logical packet (the final CRC byte); bytes beyond
+    // are radio padding, which is not CRC-protected.
+    const uint8_t logical_lens[] = {
+        PACKET_MAX_LEN,
+        V3_ACK_LEN,
+        V3_CONTROL_LEN,
+        static_cast<uint8_t>(V3_MGMT_HDR_LEN + 4u + V3_CRC_LEN),
+    };
 
     for (size_t i = 0; i < sizeof(packets) / sizeof(packets[0]); ++i) {
-        packets[i].data[packets[i].len - 1u] ^= 0x40u;
+        packets[i].data[logical_lens[i] - 1u] ^= 0x40u;
         TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ParseResult::BAD_CRC),
                                 static_cast<uint8_t>(parseByType(packets[i])));
     }
@@ -321,8 +331,18 @@ void test_seeded_parser_fuzzer_100000_inputs() {
                 validControlPacket(),
                 validMgmtPacket(),
             };
-            packet = choices[rng.next() % 4u];
-            packet.data[packet.len - 1u] ^= static_cast<uint8_t>(1u + (rng.byte() & 0x7Fu));
+            const uint8_t logical_lens[] = {
+                PACKET_MAX_LEN,
+                V3_ACK_LEN,
+                V3_CONTROL_LEN,
+                static_cast<uint8_t>(V3_MGMT_HDR_LEN + 4u + V3_CRC_LEN),
+            };
+            const uint32_t pick = rng.next() % 4u;
+            packet = choices[pick];
+            // Corrupt the final CRC byte of the logical packet (padding is
+            // not CRC-protected).
+            packet.data[logical_lens[pick] - 1u] ^=
+                static_cast<uint8_t>(1u + (rng.byte() & 0x7Fu));
         } else {
             packet = validDataPacket(1280);
             packet.data[static_cast<uint8_t>(rng.next() % packet.len)] ^= rng.byte();

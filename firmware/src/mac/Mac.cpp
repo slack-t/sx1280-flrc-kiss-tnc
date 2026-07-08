@@ -405,6 +405,7 @@ uint8_t arqEgressCapacity(void*) {
 void resetArqEngine() {
     arq::ArqConfig cfg;
     cfg.retry_timeout_cycles = ackTimeoutMs(framing_v3::V3_MAX_FRAGS);
+    cfg.ack_turnaround_cycles = RADIO_ACK_TURNAROUND_DELAY_MS;
     cfg.credit_stall_timeout_cycles = RADIO_ARQ_CREDIT_PROBE_MS;
     cfg.max_attempts = 8;
     cfg.initial_remote_credits = arq::ARQ_MAX_OUTSTANDING;
@@ -960,6 +961,9 @@ void handleV3RadioPacket(const Packet& pkt) {
         notePayloadActivity();
     }
     s_arq.onRxPacket(v3pkt, millis());
+    if (type == framing_v3::PacketType::DATA) {
+        (void)s_arq.flushPendingAck(millis());
+    }
     syncArqCounters();
 }
 
