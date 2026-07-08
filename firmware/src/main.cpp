@@ -220,6 +220,18 @@ static bool modemResetButtonHeld() {
     return digitalRead(MODEM_RESET_BUTTON_PIN) == LOW;
 }
 
+static const char* diagnosticEgressModeName(mac::DiagnosticEgressMode mode) {
+    switch (mode) {
+    case mac::DiagnosticEgressMode::BLOCKED:
+        return "blocked";
+    case mac::DiagnosticEgressMode::ONE_SHOT_ZERO_CREDIT:
+        return "oneshot";
+    case mac::DiagnosticEgressMode::OPEN:
+    default:
+        return "open";
+    }
+}
+
 static void handleControlCommand(const uint8_t* data, uint16_t len) {
     char cmd[256];
     if (len >= sizeof(cmd)) {
@@ -271,7 +283,7 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
                  "wuTx=%lu wuRx=%lu wuAck=%lu wuTO=%lu "
                  "v3VerDrop=%lu v3TypeDrop=%lu arqV3Retry=%lu arqV3Sat=%lu "
                  "arqV3Bad=%lu arqV3Credit=%lu arqV3Alloc=%lu arqV3TxDone=%lu "
-                 "arqV3Probe=%lu "
+                 "arqV3Probe=%lu diagEgress=%u "
                  "egress=%lu hwmMac=%lu hwmSrx=%lu hwmStx=%lu",
                  snapshot.rxCount,
                  snapshot.rxBytes,
@@ -305,6 +317,7 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
                  snapshot.arqV3AllocationFailure,
                  snapshot.arqV3TxCompleted,
                  snapshot.arqV3CreditProbes,
+                 static_cast<unsigned>(mac::diagnosticEgressMode()),
                  snapshot.rxEgressDeferrals,
                  snapshot.macStackHwm,
                  snapshot.serialRxStackHwm,
@@ -338,6 +351,57 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
 #else
         (void)written;
 #endif
+        sendControlResponse(response);
+        return;
+    }
+
+    if (strcasecmp(verb, "DIAG") == 0) {
+        mac::DiagnosticEgressMode egress_mode = mac::diagnosticEgressMode();
+        bool changed = false;
+        for (char* token = strtok_r(nullptr, " \t\r\n", &save);
+             token != nullptr;
+             token = strtok_r(nullptr, " \t\r\n", &save)) {
+            char* eq = strchr(token, '=');
+            if (!eq) {
+                sendControlResponse("ERR expected key=value");
+                return;
+            }
+            *eq = '\0';
+            const char* key = token;
+            const char* value = eq + 1;
+            if (strcasecmp(key, "egress") != 0) {
+                sendControlResponse("ERR unknown diag key");
+                return;
+            }
+            if (strcasecmp(value, "1") == 0 ||
+                strcasecmp(value, "on") == 0 ||
+                strcasecmp(value, "true") == 0 ||
+                strcasecmp(value, "blocked") == 0 ||
+                strcasecmp(value, "block") == 0) {
+                egress_mode = mac::DiagnosticEgressMode::BLOCKED;
+            } else if (strcasecmp(value, "0") == 0 ||
+                       strcasecmp(value, "off") == 0 ||
+                       strcasecmp(value, "false") == 0 ||
+                       strcasecmp(value, "open") == 0 ||
+                       strcasecmp(value, "normal") == 0) {
+                egress_mode = mac::DiagnosticEgressMode::OPEN;
+            } else if (strcasecmp(value, "oneshot") == 0 ||
+                       strcasecmp(value, "one-shot") == 0 ||
+                       strcasecmp(value, "zero") == 0 ||
+                       strcasecmp(value, "zero-credit") == 0) {
+                egress_mode = mac::DiagnosticEgressMode::ONE_SHOT_ZERO_CREDIT;
+            } else {
+                sendControlResponse("ERR invalid egress (use open, blocked, or oneshot)");
+                return;
+            }
+            changed = true;
+        }
+        if (changed) {
+            mac::setDiagnosticEgressMode(egress_mode);
+        }
+        char response[48];
+        snprintf(response, sizeof(response), "OK diag egress=%s",
+                 diagnosticEgressModeName(egress_mode));
         sendControlResponse(response);
         return;
     }
@@ -423,7 +487,7 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
     }
 
     if (strcasecmp(verb, "SET") != 0) {
-        sendControlResponse("ERR expected GET, SET, SCAN, or DEFAULTS");
+        sendControlResponse("ERR expected GET, SET, SCAN, DIAG, or DEFAULTS");
         return;
     }
 

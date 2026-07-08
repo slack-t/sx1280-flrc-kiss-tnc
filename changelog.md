@@ -36,6 +36,15 @@
   pressure, one queried stats before recovery, and one lost the useful counter
   epoch. The next step is a deterministic receiver egress-block diagnostic mode
   or command.
+- Added that diagnostic as a KISS control command: `DIAG egress=open`,
+  `DIAG egress=blocked`, and `DIAG egress=oneshot`. The one-shot mode allows
+  one receiver delivery, then advertises zero credits, which reproduces the
+  zero-credit completion ACK needed to exercise the delayed probe branch.
+  Hardware run confirmed `arqV3Probe` increments (`arqV3Probe=3` for 4 frames;
+  `arqV3Probe=1` for 2 frames with receiver reopened during the sender hold).
+  Full post-clear delivery completion is still open: the captured recovery run
+  returned `arqV3TxDone=0`, so the next focus is receiver release/completion
+  after a one-shot zero-credit ACK.
 
 ## 2026-07-07
 

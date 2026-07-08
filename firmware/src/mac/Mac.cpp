@@ -85,6 +85,9 @@ CompletedFrameCache s_completed;
 arq::ArqEngine      s_arq;
 arq::ArqCounters    s_arqLastCounters;
 PayloadFrame        s_arqDeliveryFrame;
+volatile DiagnosticEgressMode g_diagnostic_egress_mode =
+    DiagnosticEgressMode::OPEN;
+volatile bool g_diagnostic_egress_one_available = false;
 
 // ── TX-side state machine ─────────────────────────────────────────────────────
 enum class TxPhase : uint8_t {
@@ -381,6 +384,17 @@ bool deliverArqDatagram(const uint8_t* data, uint16_t len, void*) {
 }
 
 uint8_t arqEgressCapacity(void*) {
+    const DiagnosticEgressMode mode = g_diagnostic_egress_mode;
+    if (mode == DiagnosticEgressMode::BLOCKED) {
+        return 0;
+    }
+    if (mode == DiagnosticEgressMode::ONE_SHOT_ZERO_CREDIT) {
+        if (g_diagnostic_egress_one_available) {
+            g_diagnostic_egress_one_available = false;
+            return 1;
+        }
+        return 0;
+    }
     if (s_rxQueue == nullptr) {
         return 0;
     }
@@ -1513,6 +1527,17 @@ void notifyTxWork() {
     if (s_txWakeSema != nullptr) {
         xSemaphoreGive(s_txWakeSema);  // full semaphore = wake already pending
     }
+}
+
+void setDiagnosticEgressMode(DiagnosticEgressMode mode) {
+    g_diagnostic_egress_mode = mode;
+    g_diagnostic_egress_one_available =
+        (mode == DiagnosticEgressMode::ONE_SHOT_ZERO_CREDIT);
+    notifyTxWork();
+}
+
+DiagnosticEgressMode diagnosticEgressMode() {
+    return g_diagnostic_egress_mode;
 }
 
 int16_t requestApplyConfig(const ModemConfig& cfg) {

@@ -38,4 +38,15 @@ uint8_t requestScanBand(float startMHz, float stopMHz, float stepMHz,
 // Safe to call from any task.
 void refreshLinkStats();
 
+enum class DiagnosticEgressMode : uint8_t {
+    OPEN = 0,
+    BLOCKED = 1,
+    ONE_SHOT_ZERO_CREDIT = 2,
+};
+
+// Diagnostic receiver egress controls for hardware ARQ credit-stall tests.
+// ONE_SHOT_ZERO_CREDIT allows one delivery, then reports zero receiver credits.
+void setDiagnosticEgressMode(DiagnosticEgressMode mode);
+DiagnosticEgressMode diagnosticEgressMode();
+
 }  // namespace mac
