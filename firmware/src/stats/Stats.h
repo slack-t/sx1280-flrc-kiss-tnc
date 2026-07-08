@@ -104,6 +104,7 @@ struct Stats {
     uint8_t  linkReady  = 0;
     uint8_t  linkState  = 0;   // LinkState enum value
     uint32_t linkAgeMs  = 0xFFFFFFFFu;
+    uint32_t lastRadioErrorMs = 0;  // millis() of most recent radio error; 0 = never
     uint8_t  configVersion = 0;
     uint8_t  configSource = 0;
     // ── MAC / task supervision ───────────────────────────────────────────────

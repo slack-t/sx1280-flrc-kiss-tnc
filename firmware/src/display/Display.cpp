@@ -117,7 +117,9 @@ void Display::update(const Stats& s) {
 
     // Header: link state, transport mode, and recent traffic indicators.
     const char* linkLabel = "DOWN";
-    if (s.radioState == RadioState::ERROR) {
+    const bool recentError = s.lastRadioErrorMs != 0 &&
+        (now - s.lastRadioErrorMs) <= RADIO_ERROR_HOLD_MS;
+    if (s.radioState == RadioState::ERROR && recentError) {
         linkLabel = "ERROR";
     } else if (s.linkState == static_cast<uint8_t>(LinkState::READY)) {
         linkLabel = "READY";

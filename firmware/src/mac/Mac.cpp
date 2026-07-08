@@ -190,6 +190,7 @@ void noteRadioError() {
     sm.lock();
     sm.get().errorCount++;
     sm.get().radioState = RadioState::ERROR;
+    sm.get().lastRadioErrorMs = millis();
     sm.unlock();
 }
 
@@ -332,7 +333,15 @@ bool sendArqRadioPacket(const framing_v3::Packet& v3pkt, void*) {
         noteRadioTxError();
         return false;
     }
-    notePayloadActivity();
+    // Only data-path packets count as payload activity. CONTROL replies
+    // (e.g. HEARTBEAT_ACK) must not, or answering the peer's heartbeats
+    // defers our own via the payload-idle gate and the schedules starve
+    // each other.
+    if (type == framing_v3::PacketType::DATA || type == framing_v3::PacketType::ACK) {
+        notePayloadActivity();
+    } else {
+        noteLinkActivity();
+    }
     if (type == framing_v3::PacketType::DATA) {
         vTaskDelay(pdMS_TO_TICKS(RADIO_INTER_FRAG_DELAY_MS));
     }
@@ -363,6 +372,10 @@ bool deliverArqDatagram(const uint8_t* data, uint16_t len, void*) {
     }
     sm.unlock();
     notePayloadActivity();
+    // Datagram completion counts as bidirectional confirmation on the RX
+    // side: beyond the first credit window the sender cannot keep opening
+    // new datagrams unless our ACKs are reaching it.
+    noteBidirectionalControl();
     return true;
 }
 
@@ -922,6 +935,10 @@ void handleV3RadioPacket(const Packet& pkt) {
 
     if (type == framing_v3::PacketType::ACK) {
         bumpCounter(&Stats::arqAckRxCount);
+        // A parseable ACK from the peer is bidirectional proof: it heard our
+        // DATA and we heard its reply. Keeps the link READY during transfers,
+        // when heartbeats are suppressed by the idle gate.
+        noteBidirectionalControl();
     }
     if (type == framing_v3::PacketType::DATA || type == framing_v3::PacketType::ACK) {
         notePayloadActivity();
@@ -1322,7 +1339,10 @@ void serviceIdle(uint32_t now) {
         }
 
         if (deadlinePassed(now, s_nextHbMs)) {
-            if (isLinkIdle()) {
+            // Gate on payload idleness, not general link activity: the peer's
+            // own heartbeats otherwise defer ours and the two boards can
+            // mutually starve their schedules after a transfer.
+            if (isPayloadIdle()) {
                 startHeartbeat(now);
             } else {
                 s_nextHbMs = now + hbIntervalMs();
@@ -1343,7 +1363,7 @@ void serviceIdle(uint32_t now) {
     }
 
     if (deadlinePassed(now, s_nextHbMs)) {
-        if (isLinkIdle()) {
+        if (isPayloadIdle()) {
             startHeartbeat(now);
         } else {
             s_nextHbMs = now + hbIntervalMs();
@@ -1536,13 +1556,22 @@ void refreshLinkStats() {
     const uint32_t age_ms = g_link_ever_confirmed
         ? (millis() - g_last_bidirectional_ctrl_ms)
         : 0xFFFFFFFFu;
+    // READY → PROBING → DOWN with hysteresis: a confirmation gap past the
+    // READY TTL means heartbeats are being attempted, not that the link is
+    // gone; only a gap past the probe TTL demotes to DOWN.
+    LinkState state = LinkState::DOWN;
+    if (g_link_ever_confirmed) {
+        if (ready) {
+            state = LinkState::READY;
+        } else if (age_ms <= RADIO_LINK_PROBE_TTL_MS) {
+            state = LinkState::PROBING;
+        }
+    }
     auto& sm = StatsManager::instance();
     sm.lock();
     const bool was_ready = (sm.get().linkReady != 0);
     sm.get().linkReady = ready ? 1u : 0u;
-    sm.get().linkState = ready
-        ? static_cast<uint8_t>(LinkState::READY)
-        : static_cast<uint8_t>(LinkState::DOWN);
+    sm.get().linkState = static_cast<uint8_t>(state);
     sm.get().linkAgeMs = age_ms;
     if (was_ready && !ready) {
         sm.get().linkDownTransitions++;

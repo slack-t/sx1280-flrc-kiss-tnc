@@ -100,7 +100,9 @@
 #define RADIO_HEARTBEAT_JITTER_MS       250   // random jitter added to heartbeat interval
 #define RADIO_CONTROL_ACK_TIMEOUT_MS    40    // ms to wait for HEARTBEAT_ACK or DATA_READY
 #define RADIO_CONTROL_MAX_RETRIES       1     // DATA_PENDING retries after timeout
-#define RADIO_LINK_READY_TTL_MS         3000  // ms without bidirectional confirmation → LINK_DOWN
+#define RADIO_LINK_READY_TTL_MS         3000  // ms without bidirectional confirmation → READY ends (PROBING)
+#define RADIO_LINK_PROBE_TTL_MS         10000 // ms without bidirectional confirmation → LINK_DOWN
+#define RADIO_ERROR_HOLD_MS             3000  // report/display ERROR only this long after the last radio error
 
 
 // ── Task stack sizes (bytes) ─────────────────────────────────────────────────

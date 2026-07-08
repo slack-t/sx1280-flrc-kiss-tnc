@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-07-08
+
+### Link-state stability
+
+- Link readiness is now refreshed by data-path traffic, not only heartbeats:
+  a valid v3 ACK from the peer and each completed inbound datagram count as
+  bidirectional confirmation. The link no longer reports DOWN during active
+  transfers.
+- Heartbeat scheduling gates on payload idleness instead of general link
+  activity, and CONTROL transmissions no longer mark payload activity —
+  fixing mutual heartbeat starvation that delayed post-transfer heartbeat
+  resume by ~10 s.
+- `linkState` now reports READY → PROBING → DOWN with hysteresis (new
+  `RADIO_LINK_PROBE_TTL_MS`, 10 s); the OLED ERROR label requires a radio
+  error within the last `RADIO_ERROR_HOLD_MS` (3 s) instead of being sticky.
+- Verified on both boards: 30 × 1000 B zero-gap burst with a draining host —
+  READY across all 18 STATS polls during and after the transfer, 30/30 frames
+  delivered clean. Details in `docs/link_state_stability_20260708.md`.
+- Documented a pre-existing ARQ credit-starvation deadlock triggered by
+  sustained host egress backpressure (sender wedges with no retry deadline
+  and no credit recovery). This is the outstanding WP-B egress-blockage gate;
+  top follow-up before WP-C.
+
 ## 2026-07-07
 
 ### WP-B bench tooling
