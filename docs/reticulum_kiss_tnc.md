@@ -47,8 +47,9 @@ interface_enabled = true
 port = /tmp/kiss_reticulum
 speed = 115200
 flow_control = false
-mode = full
+mode = point-to-point
 name = FLRC TNC via Bridge
+
 ```
 
 ## Parameter & Tuning Decisions
@@ -57,10 +58,21 @@ name = FLRC TNC via Bridge
 * **Baud Rate**: The virtual port is a PTY, so Reticulum's `speed` parameter is ignored by the OS kernel (set to `115200` for compatibility). The physical serial connection to the USB CDC device is opened at `921600` baud.
 * **Flow Control**: Flow control must be disabled on both the physical serial port and in the Reticulum configuration (`flow_control = false`).
 
-### 2. Duplex Mode & Carrier Sensing (`mode = full`)
-We use **`mode = full`** in Reticulum because the TNC firmware has built-in hardware-level **Listen-Before-Talk (LBT)** CSMA. Configuring `mode = full` delegates all channel scheduling and backoff logic to the TNC itself.
+### 2. RNS Interface Mode (`mode = point-to-point` vs `mode = full`)
+In Reticulum, the `mode` parameter specifies the **RNS routing and topology mode** for the interface (which controls how path announces and route discoveries are propagated), **not** the physical serial/radio duplexing.
 
-> [!IMPORTANT]
-> The TNC's default LBT threshold (`RADIO_LBT_RSSI_THRESHOLD_DBM` in `src/config.h`) is `0` (disabled). You must configure the TNC's LBT threshold to an active value (e.g., `-90` dBm) either by:
-> 1. Compiling the firmware with `#define RADIO_LBT_RSSI_THRESHOLD_DBM -90` in `src/config.h`.
-> 2. Sending the command `SET lbt=-90` to the TNC's control port.
+The relevant modes are:
+*   **`mode = full`**: Standard mesh interface mode. The node actively participates in path selection and propagates announces bidirectionally.
+*   **`mode = point-to-point`** (or `ptp`): Optimized for dedicated point-to-point links (like this FLRC backhaul or virtual tunnels). It prevents redundant announce rebroadcasting back to the sending node, reducing wireless link overhead.
+
+**Recommendation**: Since this SX1280 FLRC TNC setup is designed as a dedicated point-to-point wireless backhaul between exactly two units, setting **`mode = point-to-point`** (or `mode = ptp`) is the most appropriate and optimized configuration. The default `mode = full` is also functional but generates more announce traffic.
+
+### 3. Duplexing & Carrier Sensing (CSMA/LBT)
+Reticulum's `KISSInterface` can perform host-side CSMA collision avoidance (using timing parameters like `preamble`, `txtail`, `persistence`, and `slottime`). However, because the TNC firmware has built-in hardware-level **Listen-Before-Talk (LBT)** CSMA, it is much more efficient to delegate channel access control entirely to the TNC's dedicated MAC task.
+
+To ensure the TNC manages channel access:
+1. Do not configure host-side CSMA parameters (like `persistence` or `slottime`) in the Reticulum config, which allows Reticulum to push frames to the TNC immediately.
+2. Enable LBT in the TNC firmware by setting the RSSI threshold to a active value (e.g., `-90` dBm). By default, `RADIO_LBT_RSSI_THRESHOLD_DBM` is `0` (disabled). You can enable it by:
+   * Compiling the firmware with `#define RADIO_LBT_RSSI_THRESHOLD_DBM -90` in `src/config.h`.
+   * Sending the command `SET lbt=-90` via the TNC's control port.
+
