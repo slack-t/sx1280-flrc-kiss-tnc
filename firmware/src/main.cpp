@@ -271,6 +271,7 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
                  "wuTx=%lu wuRx=%lu wuAck=%lu wuTO=%lu "
                  "v3VerDrop=%lu v3TypeDrop=%lu arqV3Retry=%lu arqV3Sat=%lu "
                  "arqV3Bad=%lu arqV3Credit=%lu arqV3Alloc=%lu arqV3TxDone=%lu "
+                 "arqV3Probe=%lu "
                  "egress=%lu hwmMac=%lu hwmSrx=%lu hwmStx=%lu",
                  snapshot.rxCount,
                  snapshot.rxBytes,
@@ -303,6 +304,7 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
                  snapshot.arqV3CreditWithdrawal,
                  snapshot.arqV3AllocationFailure,
                  snapshot.arqV3TxCompleted,
+                 snapshot.arqV3CreditProbes,
                  snapshot.rxEgressDeferrals,
                  snapshot.macStackHwm,
                  snapshot.serialRxStackHwm,

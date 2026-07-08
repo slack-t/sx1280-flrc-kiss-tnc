@@ -103,6 +103,7 @@
 #define RADIO_LINK_READY_TTL_MS         3000  // ms without bidirectional confirmation → READY ends (PROBING)
 #define RADIO_LINK_PROBE_TTL_MS         10000 // ms without bidirectional confirmation → LINK_DOWN
 #define RADIO_ERROR_HOLD_MS             3000  // report/display ERROR only this long after the last radio error
+#define RADIO_ARQ_CREDIT_PROBE_MS       500   // ms at zero credits with queued data before probing the receiver
 
 
 // ── Task stack sizes (bytes) ─────────────────────────────────────────────────

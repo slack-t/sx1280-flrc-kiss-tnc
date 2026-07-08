@@ -99,6 +99,7 @@ struct Stats {
     uint32_t arqV3CreditWithdrawal = 0;
     uint32_t arqV3AllocationFailure = 0;
     uint32_t arqV3TxCompleted      = 0;
+    uint32_t arqV3CreditProbes     = 0;
     uint32_t linkReadyTransitions  = 0;
     uint32_t linkDownTransitions   = 0;
     uint8_t  linkReady  = 0;

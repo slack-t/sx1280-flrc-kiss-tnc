@@ -16,6 +16,7 @@ static constexpr uint8_t ARQ_MAX_ATTEMPTS_DEFAULT = 8;
 
 struct ArqConfig {
     uint32_t retry_timeout_cycles = 8;
+    uint32_t credit_stall_timeout_cycles = 64;
     uint8_t max_attempts = ARQ_MAX_ATTEMPTS_DEFAULT;
     uint8_t initial_remote_credits = ARQ_MAX_OUTSTANDING;
     uint16_t initial_datagram_id = 0;
@@ -32,6 +33,7 @@ struct ArqCounters {
     uint32_t delivered = 0;
     uint32_t tx_completed = 0;
     uint32_t tx_rejected = 0;
+    uint32_t credit_stall_probes = 0;
 };
 
 struct ArqCallbacks {
@@ -114,6 +116,8 @@ private:
     uint8_t pending_ack_count_ = 0;
     uint8_t remote_credits_ = 0;
     uint16_t next_datagram_id_ = 0;
+    bool credit_probe_armed_ = false;
+    uint32_t credit_probe_deadline_ = 0;
 
     uint8_t currentCredits() const;
     bool enqueueAck(const framing_v3::AckFrame& ack);

@@ -40,6 +40,8 @@ void ArqEngine::reset(const ArqConfig& config, const ArqCallbacks& callbacks) {
     pending_ack_count_ = 0;
     remote_credits_ = clampCredits(config.initial_remote_credits);
     next_datagram_id_ = config.initial_datagram_id;
+    credit_probe_armed_ = false;
+    credit_probe_deadline_ = 0;
 }
 
 ArqResult ArqEngine::onTxDatagram(const uint8_t* data, uint16_t len) {
@@ -217,6 +219,11 @@ bool ArqEngine::nextDeadline(uint32_t now, uint32_t& deadline) const {
 
     bool found = false;
     uint32_t best = 0;
+    if (credit_probe_armed_ && remote_credits_ == 0 &&
+        txQueuedCount() > 0 && txActiveCount() == 0) {
+        best = credit_probe_deadline_;
+        found = true;
+    }
     for (uint8_t i = 0; i < ARQ_MAX_OUTSTANDING; ++i) {
         const TxSlot& slot = tx_slots_[i];
         if (slot.state != TxState::OPEN) {
@@ -409,9 +416,30 @@ bool ArqEngine::trySendOpenData(uint32_t now) {
 }
 
 bool ArqEngine::tryOpenQueued(uint32_t now) {
-    if (remote_credits_ == 0 || txActiveCount() != 0) {
+    if (txActiveCount() != 0) {
         return false;
     }
+    if (remote_credits_ == 0) {
+        // Credit-stall probe. With zero credits, queued work, and nothing in
+        // flight, no ACK can ever arrive to restore credits (the last ACK's
+        // zero-credit snapshot is the receiver's final word). After a stall
+        // timeout, open one datagram anyway: the receiver's reply — fresh
+        // credits, a withdrawal, or an allocation failure — resynchronizes.
+        if (txQueuedCount() == 0) {
+            credit_probe_armed_ = false;
+            return false;
+        }
+        if (!credit_probe_armed_) {
+            credit_probe_armed_ = true;
+            credit_probe_deadline_ = now + config_.credit_stall_timeout_cycles;
+            return false;
+        }
+        if (static_cast<int32_t>(now - credit_probe_deadline_) < 0) {
+            return false;
+        }
+        counters_.credit_stall_probes++;
+    }
+    credit_probe_armed_ = false;
 
     for (uint8_t i = 0; i < ARQ_MAX_OUTSTANDING; ++i) {
         TxSlot& slot = tx_slots_[i];
@@ -424,7 +452,9 @@ bool ArqEngine::tryOpenQueued(uint32_t now) {
         slot.next_fragment = 0;
         slot.attempts = 1;
         slot.retry_deadline = now + config_.retry_timeout_cycles;
-        remote_credits_--;
+        if (remote_credits_ > 0) {
+            remote_credits_--;
+        }
         return trySendOpenData(now);
     }
     return false;

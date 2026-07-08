@@ -275,6 +275,7 @@ void syncArqCounters() {
     stats.arqV3CreditWithdrawal += now.credit_withdrawal - s_arqLastCounters.credit_withdrawal;
     stats.arqV3AllocationFailure += now.allocation_failure - s_arqLastCounters.allocation_failure;
     stats.arqV3TxCompleted += now.tx_completed - s_arqLastCounters.tx_completed;
+    stats.arqV3CreditProbes += now.credit_stall_probes - s_arqLastCounters.credit_stall_probes;
     stats.arqFramesFailed += now.retry_exhaustion - s_arqLastCounters.retry_exhaustion;
     stats.arqDuplicateSuppressed += now.duplicate_suppressed - s_arqLastCounters.duplicate_suppressed;
     stats.rxEgressDeferrals += now.credit_withdrawal - s_arqLastCounters.credit_withdrawal;
@@ -390,6 +391,7 @@ uint8_t arqEgressCapacity(void*) {
 void resetArqEngine() {
     arq::ArqConfig cfg;
     cfg.retry_timeout_cycles = ackTimeoutMs(framing_v3::V3_MAX_FRAGS);
+    cfg.credit_stall_timeout_cycles = RADIO_ARQ_CREDIT_PROBE_MS;
     cfg.max_attempts = 8;
     cfg.initial_remote_credits = arq::ARQ_MAX_OUTSTANDING;
 

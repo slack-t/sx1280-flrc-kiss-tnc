@@ -363,6 +363,119 @@ void test_30_by_1280_zero_gap_burst_delivers_all() {
     TEST_ASSERT_EQUAL_UINT32(0, sim.b.engine.counters().malformed_input);
 }
 
+// Regression for the credit-starvation wedge observed on hardware 2026-07-08:
+// a completion ACK whose receiver_credits snapshot is zero completes the last
+// OPEN slot, leaving only QUEUED slots. Nothing is in flight to elicit another
+// ACK, so without the stall probe the engine reports no deadline and hangs
+// forever.
+void test_zero_credit_completion_ack_stall_recovers_via_probe() {
+    Sim sim(0xC4ED17u);
+    resetEndpoint(sim.a);
+
+    uint8_t data[64];
+    fillDatagram(data, sizeof(data), 0);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ArqResult::OK),
+                            static_cast<uint8_t>(sim.a.engine.onTxDatagram(data, sizeof(data))));
+    fillDatagram(data, sizeof(data), 1);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ArqResult::OK),
+                            static_cast<uint8_t>(sim.a.engine.onTxDatagram(data, sizeof(data))));
+
+    sim.a.outgoing_valid = false;
+    sim.a.engine.onTick(sim.now);
+    TEST_ASSERT_TRUE(sim.a.outgoing_valid);
+    TEST_ASSERT_EQUAL_UINT8(1, sim.a.engine.txActiveCount());
+
+    framing_v3::AckFrame ack;
+    ack.datagram_id = 0;
+    ack.fragment_bitmap = 0x0001;
+    ack.receiver_credits = 0;
+    ack.failure = framing_v3::FailureStatus::NONE;
+    framing_v3::Packet ack_packet;
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(framing_v3::ParseResult::OK),
+                            static_cast<uint8_t>(framing_v3::buildAckPacket(ack_packet, ack)));
+    sim.a.engine.onRxPacket(ack_packet, sim.now);
+
+    TEST_ASSERT_EQUAL_UINT8(0, sim.a.engine.txActiveCount());
+    TEST_ASSERT_EQUAL_UINT8(1, sim.a.engine.txQueuedCount());
+    TEST_ASSERT_EQUAL_UINT8(0, sim.a.engine.remoteCredits());
+
+    // First tick arms the probe; the engine must publish a wake-up deadline.
+    sim.a.outgoing_valid = false;
+    sim.a.engine.onTick(sim.now);
+    TEST_ASSERT_FALSE(sim.a.outgoing_valid);
+    uint32_t deadline = 0;
+    TEST_ASSERT_TRUE(sim.a.engine.nextDeadline(sim.now, deadline));
+
+    // Before the stall timeout: still silent.
+    sim.now++;
+    sim.a.engine.onTick(sim.now);
+    TEST_ASSERT_FALSE(sim.a.outgoing_valid);
+    TEST_ASSERT_EQUAL_UINT32(0, sim.a.engine.counters().credit_stall_probes);
+
+    // At the deadline: the probe opens the queued datagram and transmits.
+    sim.now = deadline;
+    sim.a.engine.onTick(sim.now);
+    TEST_ASSERT_TRUE(sim.a.outgoing_valid);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(framing_v3::PacketType::DATA),
+                            static_cast<uint8_t>(packetType(sim.a.outgoing)));
+    TEST_ASSERT_EQUAL_UINT8(1, sim.a.engine.txActiveCount());
+    TEST_ASSERT_EQUAL_UINT8(0, sim.a.engine.txQueuedCount());
+    TEST_ASSERT_EQUAL_UINT32(1, sim.a.engine.counters().credit_stall_probes);
+}
+
+void test_credit_restore_via_any_ack_short_circuits_probe() {
+    Sim sim(0x5EEDC0DEu);
+    resetEndpoint(sim.a);
+
+    uint8_t data[64];
+    fillDatagram(data, sizeof(data), 0);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ArqResult::OK),
+                            static_cast<uint8_t>(sim.a.engine.onTxDatagram(data, sizeof(data))));
+    fillDatagram(data, sizeof(data), 1);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ArqResult::OK),
+                            static_cast<uint8_t>(sim.a.engine.onTxDatagram(data, sizeof(data))));
+
+    sim.a.outgoing_valid = false;
+    sim.a.engine.onTick(sim.now);
+    TEST_ASSERT_TRUE(sim.a.outgoing_valid);
+
+    framing_v3::AckFrame ack;
+    ack.datagram_id = 0;
+    ack.fragment_bitmap = 0x0001;
+    ack.receiver_credits = 0;
+    ack.failure = framing_v3::FailureStatus::NONE;
+    framing_v3::Packet ack_packet;
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(framing_v3::ParseResult::OK),
+                            static_cast<uint8_t>(framing_v3::buildAckPacket(ack_packet, ack)));
+    sim.a.engine.onRxPacket(ack_packet, sim.now);
+
+    sim.a.outgoing_valid = false;
+    sim.a.engine.onTick(sim.now);  // arms the probe
+    TEST_ASSERT_FALSE(sim.a.outgoing_valid);
+
+    // A later ACK (e.g. a duplicate-window re-ACK) restores credits; the
+    // engine must resume immediately instead of waiting out the stall timer.
+    ack.datagram_id = 999;
+    ack.fragment_bitmap = 0;
+    ack.receiver_credits = 2;
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(framing_v3::ParseResult::OK),
+                            static_cast<uint8_t>(framing_v3::buildAckPacket(ack_packet, ack)));
+    sim.a.engine.onRxPacket(ack_packet, sim.now);
+    TEST_ASSERT_EQUAL_UINT8(2, sim.a.engine.remoteCredits());
+
+    uint32_t deadline = 0;
+    TEST_ASSERT_TRUE(sim.a.engine.nextDeadline(sim.now, deadline));
+    TEST_ASSERT_EQUAL_UINT32(sim.now, deadline);
+
+    sim.now++;
+    sim.a.engine.onTick(sim.now);
+    TEST_ASSERT_TRUE(sim.a.outgoing_valid);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(framing_v3::PacketType::DATA),
+                            static_cast<uint8_t>(packetType(sim.a.outgoing)));
+    TEST_ASSERT_EQUAL_UINT32(0, sim.a.engine.counters().credit_stall_probes);
+    TEST_ASSERT_EQUAL_UINT8(1, sim.a.engine.remoteCredits());
+}
+
 int main(int argc, char** argv) {
     UNITY_BEGIN();
     RUN_TEST(test_convergence_under_30_percent_loss_bidirectional);
@@ -372,5 +485,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_retry_exhaustion_surfaces_failure_and_frees_buffer);
     RUN_TEST(test_partial_ack_is_deferred_until_round_end);
     RUN_TEST(test_30_by_1280_zero_gap_burst_delivers_all);
+    RUN_TEST(test_zero_credit_completion_ack_stall_recovers_via_probe);
+    RUN_TEST(test_credit_restore_via_any_ack_short_circuits_probe);
     return UNITY_END();
 }
