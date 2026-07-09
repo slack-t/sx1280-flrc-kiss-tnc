@@ -3,11 +3,9 @@
 #include <freertos/task.h>
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
+#include <esp_task_wdt.h>
 
 #include "config.h"
-#if SERIAL_TX_WDT_DIAGNOSTICS
-#include <esp_task_wdt.h>
-#endif
 #include "radio/Radio.h"
 #include "kiss/Kiss.h"
 #include "framing/Framing.h"
@@ -56,6 +54,7 @@ static constexpr uint8_t SERIAL_RX_BACKLOG_DEPTH = 32;
 
 static uint32_t serialRxLastReadMs = 0;
 static uint32_t serialRxQueueWaitStartMs = 0;
+static uint32_t serialRxAvailNoReadStartMs = 0;
 
 static void refreshSerialRxStats() {
     const uint32_t now = millis();
@@ -72,6 +71,13 @@ static void refreshSerialRxStats() {
         s.serialRxQueueWaitMs = age;
         if (age > s.serialRxQueueMaxWaitMs) {
             s.serialRxQueueMaxWaitMs = age;
+        }
+    }
+    if (serialRxAvailNoReadStartMs != 0) {
+        const uint32_t age = now - serialRxAvailNoReadStartMs;
+        s.serialRxAvailNoReadMs = age;
+        if (age > s.serialRxAvailNoReadMaxMs) {
+            s.serialRxAvailNoReadMaxMs = age;
         }
     }
     sm.unlock();
@@ -146,6 +152,36 @@ static void noteSerialRxQueuedToTx() {
     auto& sm = StatsManager::instance();
     sm.lock();
     sm.get().serialRxQueuedToTx++;
+    sm.unlock();
+}
+
+static void noteSerialRxReadMinusOne(uint16_t avail) {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    Stats& s = sm.get();
+    s.serialRxReadMinusOne++;
+    s.serialRxLastAvailNoRead = avail;
+    if (serialRxAvailNoReadStartMs == 0) {
+        serialRxAvailNoReadStartMs = millis();
+        s.serialRxAvailNoReadEvents++;
+        s.serialRxAvailNoReadMs = 0;
+    }
+    sm.unlock();
+}
+
+static void noteSerialRxReadProgress() {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    Stats& s = sm.get();
+    if (serialRxAvailNoReadStartMs != 0) {
+        const uint32_t elapsed = millis() - serialRxAvailNoReadStartMs;
+        s.serialRxAvailNoReadMs = elapsed;
+        if (elapsed > s.serialRxAvailNoReadMaxMs) {
+            s.serialRxAvailNoReadMaxMs = elapsed;
+        }
+    }
+    serialRxAvailNoReadStartMs = 0;
+    s.serialRxAvailNoReadMs = 0;
     sm.unlock();
 }
 
@@ -260,7 +296,7 @@ static inline void noteSerialTxDone() {}
 #endif  // SERIAL_TX_WDT_DIAGNOSTICS
 
 static void sendControlResponse(const char* text) {
-    static uint8_t encBuf[1024];
+    static uint8_t encBuf[1536];
     const size_t len = strlen(text);
     const size_t encLen = Kiss::encodeFrame(KISS_CONTROL_FRAME,
                                             reinterpret_cast<const uint8_t*>(text),
@@ -372,13 +408,14 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
         if (snapshot.linkState == static_cast<uint8_t>(LinkState::READY))   lsName = "READY";
         else if (snapshot.linkState == static_cast<uint8_t>(LinkState::PROBING)) lsName = "PROBING";
 
-        char response[1024];
+        char response[1400];
         int written = snprintf(response, sizeof(response),
                  "OK rx=%lu rxBytes=%lu arqDone=%lu arqMetaDrop=%lu arqIntDrop=%lu arqCrc=%lu "
                  "stxZero=%lu stxTimeout=%lu stxEncodeFail=%lu rxQWait=%lu "
                  "srxBytes=%lu srxFrames=%lu srxFull=%lu srxWait=%lu srxWaitMax=%lu "
                  "srxWaitActive=%u srxAge=%lu srxAvailMax=%u srxBacklog=%u/%u "
-                 "srxDrop=%lu srxToTx=%lu "
+                 "srxDrop=%lu srxToTx=%lu srxReadNeg=%lu srxNoRead=%lu "
+                 "srxNoReadMs=%lu srxNoReadMax=%lu srxNoReadAvail=%u "
                  "linkReady=%u linkState=%s linkAgeMs=%lu "
                  "hbTx=%lu hbAckRx=%lu dpTx=%lu drRx=%lu primerTO=%lu cqDrop=%lu "
                  "wuTx=%lu wuRx=%lu wuAck=%lu wuTO=%lu "
@@ -409,6 +446,11 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
                  snapshot.serialRxBacklogMaxDepth,
                  snapshot.serialRxBacklogDrops,
                  snapshot.serialRxQueuedToTx,
+                 snapshot.serialRxReadMinusOne,
+                 snapshot.serialRxAvailNoReadEvents,
+                 snapshot.serialRxAvailNoReadMs,
+                 snapshot.serialRxAvailNoReadMaxMs,
+                 snapshot.serialRxLastAvailNoRead,
                  snapshot.linkReady,
                  lsName,
                  snapshot.linkAgeMs,
@@ -744,9 +786,24 @@ static void serialRxTask(void*) {
     bool tx_queue_full_reported = false;
     uint32_t last_rx_ms = 0;
     uint32_t last_hwm_ms = 0;
+#if ESP_IDF_VERSION_MAJOR >= 5
+    esp_task_wdt_config_t wdtCfg = {};
+    wdtCfg.timeout_ms    = MAC_WDT_TIMEOUT_S * 1000u;
+    wdtCfg.idle_core_mask = 0;
+    wdtCfg.trigger_panic = true;
+    if (esp_task_wdt_reconfigure(&wdtCfg) != ESP_OK) {
+        esp_task_wdt_init(&wdtCfg);
+    }
+#else
+    esp_task_wdt_init(MAC_WDT_TIMEOUT_S, true);
+#endif
+    esp_task_wdt_add(nullptr);
     snapshotStackHwm(&Stats::serialRxStackHwm);
 
     for (;;) {
+        bool made_progress = false;
+        bool read_anomaly = false;
+
         if (backlog_count > 0) {
             while (backlog_count > 0 && uxQueueSpacesAvailable(txQueue) > 0) {
                 if (xQueueSend(txQueue, &backlog[backlog_tail], 0) != pdPASS) {
@@ -757,6 +814,7 @@ static void serialRxTask(void*) {
                 noteSerialRxBacklogDepth(backlog_count);
                 noteSerialRxQueuedToTx();
                 mac::notifyTxWork();
+                made_progress = true;
                 updateStackHwm(&Stats::serialRxStackHwm, last_hwm_ms);
             }
             if (backlog_count > 0 && uxQueueSpacesAvailable(txQueue) == 0) {
@@ -773,13 +831,30 @@ static void serialRxTask(void*) {
             tx_queue_full_reported = false;
         }
 
+        if (backlog_count == SERIAL_RX_BACKLOG_DEPTH) {
+            TickType_t delay_ticks = pdMS_TO_TICKS(1);
+            if (delay_ticks == 0) {
+                delay_ticks = 1;
+            }
+            vTaskDelay(delay_ticks);
+            esp_task_wdt_reset();
+            continue;
+        }
+
         int avail = Serial.available();
         if (avail > 0) {
             last_rx_ms = millis();
             uint32_t bytes_read = 0;
             for (int i = 0; i < avail; i++) {
+                if (backlog_count == SERIAL_RX_BACKLOG_DEPTH) {
+                    break;
+                }
                 int c = Serial.read();
-                if (c < 0) break;
+                if (c < 0) {
+                    noteSerialRxReadMinusOne(static_cast<uint16_t>(avail));
+                    read_anomaly = true;
+                    break;
+                }
                 bytes_read++;
                 const KissDecodeResult result = decoder.decodeFrameEx(static_cast<uint8_t>(c), kissFrame);
                 if (result == KissDecodeResult::OVERSIZE_DROP) {
@@ -826,10 +901,6 @@ static void serialRxTask(void*) {
                 }
                 Serial.printf("\n");
 #endif
-                if (backlog_count == SERIAL_RX_BACKLOG_DEPTH) {
-                    noteSerialRxBacklogDrop();
-                    continue;
-                }
                 backlog[backlog_head] = frame;
                 backlog_head = static_cast<uint8_t>((backlog_head + 1u) % SERIAL_RX_BACKLOG_DEPTH);
                 backlog_count++;
@@ -837,8 +908,17 @@ static void serialRxTask(void*) {
             }
             if (bytes_read > 0) {
                 noteSerialRxBytes(static_cast<uint16_t>(avail), bytes_read);
+                noteSerialRxReadProgress();
+                made_progress = true;
+            } else if (read_anomaly) {
+                TickType_t delay_ticks = pdMS_TO_TICKS(1);
+                if (delay_ticks == 0) {
+                    delay_ticks = 1;
+                }
+                vTaskDelay(delay_ticks);
             }
         } else {
+            noteSerialRxReadProgress();
             // No bytes available right now.
             if (millis() - last_rx_ms < 20) {
                 // Microsecond poll to prevent adding FreeRTOS tick sleep overhead in active stream
@@ -851,6 +931,11 @@ static void serialRxTask(void*) {
                 }
                 vTaskDelay(delay_ticks);
             }
+            made_progress = true;
+        }
+
+        if (made_progress || !read_anomaly) {
+            esp_task_wdt_reset();
         }
     }
 }
@@ -892,10 +977,10 @@ static void serialTxTask(void*) {
         }
 #endif
 
-        // Submit the complete KISS frame under one logical write lock. Do not
-        // call HWCDC::flush(): in the pinned Arduino core a flush timeout marks
-        // CDC disconnected and silently discards later frames. write() already
-        // triggers the USB ISR and blocks as needed while the enlarged ring
+        // Submit the complete KISS frame under one logical write lock. Keep
+        // avoiding HWCDC::flush(): the 3.x driver still treats a flush timeout
+        // as a disconnect and clears queued TX bytes. write() already triggers
+        // the USB ISR and reports bounded progress while the enlarged ring
         // drains.
         xSemaphoreTake(serialWriteMutex, portMAX_DELAY);
         noteSerialWriteLock(true);

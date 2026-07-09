@@ -195,6 +195,7 @@ def run_listen(args: argparse.Namespace) -> int:
     duplicate_conflicts = 0
     first_seq = None
     last_seq = None
+    stream_bytes = 0
     deadline = time.monotonic() + args.idle_timeout
 
     try:
@@ -202,15 +203,23 @@ def run_listen(args: argparse.Namespace) -> int:
             waiting = ser.in_waiting
             if waiting:
                 data = ser.read(waiting)
+                stream_bytes += len(data)
                 for port, payload in decoder.feed(data):
                     if port != KISS_DATA_PORT:
                         continue
+                    frame_index = total + 1
+                    raw_payload = payload
                     try:
                         payload = serial_integrity.unwrap_payload(payload)
                     except ValueError as e:
                         bad += 1
                         bad_reasons[f"serial_{e.__class__.__name__}"] += 1
-                        print(f"RX serial integrity drop: {e}", flush=True)
+                        print(
+                            f"RX serial integrity drop: frame={frame_index} "
+                            f"stream_bytes={stream_bytes} raw_len={len(raw_payload)} "
+                            f"error={e} raw_hex={raw_payload.hex()}",
+                            flush=True,
+                        )
                         continue
 
                     seq, size, ok, reason = parse_payload(payload)

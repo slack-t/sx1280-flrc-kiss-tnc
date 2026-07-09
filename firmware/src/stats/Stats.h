@@ -58,6 +58,11 @@ struct Stats {
     uint8_t  serialRxBacklogMaxDepth = 0;
     uint32_t serialRxBacklogDrops = 0;
     uint32_t serialRxQueuedToTx = 0;
+    uint32_t serialRxReadMinusOne = 0;
+    uint32_t serialRxAvailNoReadEvents = 0;
+    uint32_t serialRxAvailNoReadMs = 0;
+    uint32_t serialRxAvailNoReadMaxMs = 0;
+    uint16_t serialRxLastAvailNoRead = 0;
     uint32_t serialRxIntegrityDrops = 0;
     uint32_t rxSpuriousIrqCount  = 0;
     uint32_t rxInvalidLengthCount = 0;

@@ -277,7 +277,9 @@ void syncArqCounters() {
     stats.arqV3MalformedInput += now.malformed_input - s_arqLastCounters.malformed_input;
     stats.arqV3CreditWithdrawal += now.credit_withdrawal - s_arqLastCounters.credit_withdrawal;
     stats.arqV3AllocationFailure += now.allocation_failure - s_arqLastCounters.allocation_failure;
-    stats.arqV3TxCompleted += now.tx_completed - s_arqLastCounters.tx_completed;
+    const uint32_t tx_completed_delta = now.tx_completed - s_arqLastCounters.tx_completed;
+    stats.arqV3TxCompleted += tx_completed_delta;
+    stats.txCount += tx_completed_delta;
     stats.arqV3CreditProbes += now.credit_stall_probes - s_arqLastCounters.credit_stall_probes;
     stats.arqFramesFailed += now.retry_exhaustion - s_arqLastCounters.retry_exhaustion;
     stats.arqDuplicateSuppressed += now.duplicate_suppressed - s_arqLastCounters.duplicate_suppressed;
