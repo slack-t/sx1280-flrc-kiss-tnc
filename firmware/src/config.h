@@ -87,7 +87,7 @@
 // ── Timing and Queue Buffering Parameters ────────────────────────────────────
 // Gap between consecutive fragments.  vTaskDelay(pdMS_TO_TICKS(N)) is used so
 // Core 1 yields during the gap — delayMicroseconds() would busy-spin and starve radioRxTask.
-#define RADIO_INTER_FRAG_DELAY_MS    8     // ms gap between consecutive fragments
+#define RADIO_INTER_FRAG_DELAY_MS    2     // ms gap between consecutive fragments
 #define RX_QUEUE_TIMEOUT_MS          50    // Prevent radio RX deadlock if host is blocked
 #define RADIO_ARQ_MAX_ROUNDS         6     // Initial TX + selective retransmit rounds
 #define RADIO_ACK_TIMEOUT_MS         110   // Sender waits this long for a bitmap ACK
