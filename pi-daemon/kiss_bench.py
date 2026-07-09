@@ -34,6 +34,7 @@ from kiss_tun import (
     FIRMWARE_PAYLOAD_CAP,
     KISS_DATA_PORT,
     KissDecoder,
+    configure_serial_safety,
     kiss_encode,
     write_kiss_frame,
 )
@@ -63,6 +64,7 @@ def open_serial(port: str, baud: int) -> serial.Serial:
     ser.rtscts   = False
     ser.dtr      = False
     ser.rts      = False
+    configure_serial_safety(ser)
     ser.open()
     ser.reset_input_buffer()
     ser.reset_output_buffer()

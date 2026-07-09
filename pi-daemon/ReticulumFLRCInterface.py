@@ -49,9 +49,26 @@ DEFAULT_RADIO_BITRATE = 150000
 # (same mitigation as kiss_tun.py write_kiss_frame).
 SERIAL_WRITE_CHUNK = 64
 SERIAL_WRITE_GAP_S = 0.001
+SERIAL_WRITE_TIMEOUT_S = 2.0
 
 # Seconds between reconnection attempts after a serial failure
 RECONNECT_WAIT_S = 5
+
+
+def close_stalled_serial(ser):
+    try:
+        if hasattr(ser, "cancel_write"):
+            ser.cancel_write()
+    except Exception:
+        pass
+    try:
+        ser.reset_output_buffer()
+    except Exception:
+        pass
+    try:
+        ser.close()
+    except Exception:
+        pass
 
 class ReticulumFLRCInterface(Interface):
     """
@@ -132,6 +149,7 @@ class ReticulumFLRCInterface(Interface):
                 s.rtscts = False
                 s.dtr = False
                 s.rts = False
+                s.write_timeout = SERIAL_WRITE_TIMEOUT_S
                 s.open()
                 s.dtr = False
                 s.rts = False
@@ -288,13 +306,23 @@ class ReticulumFLRCInterface(Interface):
                     return False
                 for offset in range(0, len(encoded), SERIAL_WRITE_CHUNK):
                     chunk = encoded[offset:offset+SERIAL_WRITE_CHUNK]
-                    self.serial.write(chunk)
+                    written = self.serial.write(chunk)
+                    if written != len(chunk):
+                        raise serial.SerialTimeoutException(
+                            f"partial serial write {written}/{len(chunk)} bytes"
+                        )
                     self.serial.flush()
                     if offset + SERIAL_WRITE_CHUNK < len(encoded):
                         time.sleep(SERIAL_WRITE_GAP_S)
 
             self.txb += len(data)
             return True
+        except serial.SerialTimeoutException as e:
+            RNS.log(f"[{self.name}] Serial write timed out, reopening port: {e}", RNS.LOG_ERROR)
+            if self.serial:
+                close_stalled_serial(self.serial)
+            self.online = False
+            return False
         except Exception as e:
             RNS.log(f"[{self.name}] Error transmitting: {e}", RNS.LOG_ERROR)
             # The read loop notices online == False and reconnects.

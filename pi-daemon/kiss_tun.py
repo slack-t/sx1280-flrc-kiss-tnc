@@ -43,6 +43,31 @@ RECONNECT_DELAY_S = 5
 
 SERIAL_WRITE_CHUNK = 64
 SERIAL_WRITE_GAP_S = 0.001
+SERIAL_WRITE_TIMEOUT_S = 2.0
+
+
+def configure_serial_safety(ser: serial.Serial,
+                            write_timeout_s: float = SERIAL_WRITE_TIMEOUT_S) -> serial.Serial:
+    """Apply serial settings that prevent permanent host-side write blocks."""
+    ser.write_timeout = write_timeout_s
+    return ser
+
+
+def close_stalled_serial(ser: serial.Serial) -> None:
+    """Best-effort close after a serial write timeout so callers reconnect cleanly."""
+    try:
+        if hasattr(ser, "cancel_write"):
+            ser.cancel_write()
+    except Exception:
+        pass
+    try:
+        ser.reset_output_buffer()
+    except Exception:
+        pass
+    try:
+        ser.close()
+    except Exception:
+        pass
 
 
 def kiss_encode(payload: bytes) -> bytes:
@@ -67,13 +92,24 @@ def write_kiss_frame(ser: serial.Serial, frame: bytes,
                      chunk_size: int = SERIAL_WRITE_CHUNK,
                      gap_s: float = SERIAL_WRITE_GAP_S) -> int:
     """Write a KISS frame in small chunks to avoid overflowing device CDC RX."""
+    if ser.write_timeout is None:
+        configure_serial_safety(ser)
     total = 0
-    for offset in range(0, len(frame), chunk_size):
-        chunk = frame[offset:offset + chunk_size]
-        total += ser.write(chunk)
-        ser.flush()
-        if offset + chunk_size < len(frame) and gap_s > 0:
-            time.sleep(gap_s)
+    try:
+        for offset in range(0, len(frame), chunk_size):
+            chunk = frame[offset:offset + chunk_size]
+            written = ser.write(chunk)
+            if written != len(chunk):
+                raise serial.SerialTimeoutException(
+                    f"partial serial write {written}/{len(chunk)} bytes"
+                )
+            total += written
+            ser.flush()
+            if offset + chunk_size < len(frame) and gap_s > 0:
+                time.sleep(gap_s)
+    except serial.SerialTimeoutException:
+        close_stalled_serial(ser)
+        raise
     return total
 
 
@@ -368,7 +404,7 @@ def main():
         while True:
             try:
                 log_info(f"[kiss_tun] Connecting to {args.port} ...", args.quiet)
-                ser = serial.Serial(args.port, args.baud, timeout=0)
+                ser = configure_serial_safety(serial.Serial(args.port, args.baud, timeout=0))
                 log_info("[kiss_tun] Connected.", args.quiet)
 
                 # run_bridge blocks until a thread sets stop (serial error) or

@@ -28,7 +28,7 @@ Host-side tools:
 - `pi-daemon-rust/src/main.rs`: optional Rust IP/TUN adapter
 - `pi-daemon/raw_kiss.py`: raw payload utility for non-IP protocols
 - `pi-daemon/modem_tui.py`: runtime modem-control UI over KISS command `0x0F`
-- `pi-daemon/reticulum_kiss_bridge.py`: Python bridge for Reticulum (RNS) integration (see [Reticulum Integration Guide](reticulum_kiss_tnc.md))
+- `pi-daemon/ReticulumFLRCInterface.py`: direct Reticulum (RNS) interface (see [Reticulum Integration Guide](reticulum_kiss_tnc.md))
 
 
 Examples:

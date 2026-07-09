@@ -51,6 +51,103 @@ static constexpr size_t SERIAL_KISS_ENCODED_MAX =
     SERIAL_WRAPPED_MAX_LEN * 2u + 3u;
 static constexpr uint32_t SERIAL_TX_TIMEOUT_MS = 1000;
 static constexpr size_t SERIAL_TX_WRITE_CHUNK = 64;
+static constexpr size_t SERIAL_RX_BUFFER_SIZE = 4096;
+static constexpr uint8_t SERIAL_RX_BACKLOG_DEPTH = 32;
+
+static uint32_t serialRxLastReadMs = 0;
+static uint32_t serialRxQueueWaitStartMs = 0;
+
+static void refreshSerialRxStats() {
+    const uint32_t now = millis();
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    Stats& s = sm.get();
+    if (serialRxLastReadMs != 0) {
+        s.serialRxLastReadAgeMs = now - serialRxLastReadMs;
+    } else {
+        s.serialRxLastReadAgeMs = 0xFFFFFFFFu;
+    }
+    if (s.serialRxQueueWaitActive && serialRxQueueWaitStartMs != 0) {
+        const uint32_t age = now - serialRxQueueWaitStartMs;
+        s.serialRxQueueWaitMs = age;
+        if (age > s.serialRxQueueMaxWaitMs) {
+            s.serialRxQueueMaxWaitMs = age;
+        }
+    }
+    sm.unlock();
+}
+
+static void noteSerialRxBytes(uint16_t avail, uint32_t count) {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    Stats& s = sm.get();
+    serialRxLastReadMs = millis();
+    s.serialRxBytesRead += count;
+    if (avail > s.serialRxMaxAvail) {
+        s.serialRxMaxAvail = avail;
+    }
+    s.serialRxLastReadAgeMs = 0;
+    sm.unlock();
+}
+
+static void noteSerialRxFrameDecoded() {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    sm.get().serialRxFramesDecoded++;
+    sm.unlock();
+}
+
+static void noteSerialRxQueueWaitStart() {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    Stats& s = sm.get();
+    s.txQueueWaitCount++;
+    s.serialRxQueueFullEvents++;
+    s.serialRxQueueWaitActive = 1;
+    s.serialRxQueueWaitMs = 0;
+    serialRxQueueWaitStartMs = millis();
+    sm.unlock();
+}
+
+static void noteSerialRxQueueWaitDone() {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    Stats& s = sm.get();
+    if (s.serialRxQueueWaitActive && serialRxQueueWaitStartMs != 0) {
+        const uint32_t elapsed = millis() - serialRxQueueWaitStartMs;
+        s.serialRxQueueWaitMs = elapsed;
+        if (elapsed > s.serialRxQueueMaxWaitMs) {
+            s.serialRxQueueMaxWaitMs = elapsed;
+        }
+    }
+    s.serialRxQueueWaitActive = 0;
+    sm.unlock();
+}
+
+static void noteSerialRxBacklogDepth(uint8_t depth) {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    Stats& s = sm.get();
+    s.serialRxBacklogDepth = depth;
+    if (depth > s.serialRxBacklogMaxDepth) {
+        s.serialRxBacklogMaxDepth = depth;
+    }
+    sm.unlock();
+}
+
+static void noteSerialRxBacklogDrop() {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    sm.get().serialRxBacklogDrops++;
+    sm.unlock();
+}
+
+static void noteSerialRxQueuedToTx() {
+    auto& sm = StatsManager::instance();
+    sm.lock();
+    sm.get().serialRxQueuedToTx++;
+    sm.unlock();
+}
 
 static void refreshModemStats() {
     auto& sm = StatsManager::instance();
@@ -264,6 +361,7 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
 
     if (strcasecmp(verb, "STATS") == 0) {
         mac::refreshLinkStats();
+        refreshSerialRxStats();
         refreshHostBackpressureStats();
         auto& sm = StatsManager::instance();
         sm.lock();
@@ -278,6 +376,9 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
         int written = snprintf(response, sizeof(response),
                  "OK rx=%lu rxBytes=%lu arqDone=%lu arqMetaDrop=%lu arqIntDrop=%lu arqCrc=%lu "
                  "stxZero=%lu stxTimeout=%lu stxEncodeFail=%lu rxQWait=%lu "
+                 "srxBytes=%lu srxFrames=%lu srxFull=%lu srxWait=%lu srxWaitMax=%lu "
+                 "srxWaitActive=%u srxAge=%lu srxAvailMax=%u srxBacklog=%u/%u "
+                 "srxDrop=%lu srxToTx=%lu "
                  "linkReady=%u linkState=%s linkAgeMs=%lu "
                  "hbTx=%lu hbAckRx=%lu dpTx=%lu drRx=%lu primerTO=%lu cqDrop=%lu "
                  "wuTx=%lu wuRx=%lu wuAck=%lu wuTO=%lu "
@@ -296,6 +397,18 @@ static void handleControlCommand(const uint8_t* data, uint16_t len) {
                  snapshot.serialTxTimeouts,
                  snapshot.serialTxEncodeFails,
                  snapshot.rxQueueWaitCount,
+                 snapshot.serialRxBytesRead,
+                 snapshot.serialRxFramesDecoded,
+                 snapshot.serialRxQueueFullEvents,
+                 snapshot.serialRxQueueWaitMs,
+                 snapshot.serialRxQueueMaxWaitMs,
+                 snapshot.serialRxQueueWaitActive,
+                 snapshot.serialRxLastReadAgeMs,
+                 snapshot.serialRxMaxAvail,
+                 snapshot.serialRxBacklogDepth,
+                 snapshot.serialRxBacklogMaxDepth,
+                 snapshot.serialRxBacklogDrops,
+                 snapshot.serialRxQueuedToTx,
                  snapshot.linkReady,
                  lsName,
                  snapshot.linkAgeMs,
@@ -624,17 +737,50 @@ static void serialRxTask(void*) {
     static Kiss     decoder;
     static KissFrame kissFrame;
     static PayloadFrame frame;
+    static PayloadFrame backlog[SERIAL_RX_BACKLOG_DEPTH];
+    uint8_t backlog_head = 0;
+    uint8_t backlog_tail = 0;
+    uint8_t backlog_count = 0;
+    bool tx_queue_full_reported = false;
     uint32_t last_rx_ms = 0;
     uint32_t last_hwm_ms = 0;
     snapshotStackHwm(&Stats::serialRxStackHwm);
 
     for (;;) {
+        if (backlog_count > 0) {
+            while (backlog_count > 0 && uxQueueSpacesAvailable(txQueue) > 0) {
+                if (xQueueSend(txQueue, &backlog[backlog_tail], 0) != pdPASS) {
+                    break;
+                }
+                backlog_tail = static_cast<uint8_t>((backlog_tail + 1u) % SERIAL_RX_BACKLOG_DEPTH);
+                backlog_count--;
+                noteSerialRxBacklogDepth(backlog_count);
+                noteSerialRxQueuedToTx();
+                mac::notifyTxWork();
+                updateStackHwm(&Stats::serialRxStackHwm, last_hwm_ms);
+            }
+            if (backlog_count > 0 && uxQueueSpacesAvailable(txQueue) == 0) {
+                if (!tx_queue_full_reported) {
+                    noteSerialRxQueueWaitStart();
+                    tx_queue_full_reported = true;
+                }
+            } else if (tx_queue_full_reported) {
+                noteSerialRxQueueWaitDone();
+                tx_queue_full_reported = false;
+            }
+        } else if (tx_queue_full_reported) {
+            noteSerialRxQueueWaitDone();
+            tx_queue_full_reported = false;
+        }
+
         int avail = Serial.available();
         if (avail > 0) {
             last_rx_ms = millis();
+            uint32_t bytes_read = 0;
             for (int i = 0; i < avail; i++) {
                 int c = Serial.read();
                 if (c < 0) break;
+                bytes_read++;
                 const KissDecodeResult result = decoder.decodeFrameEx(static_cast<uint8_t>(c), kissFrame);
                 if (result == KissDecodeResult::OVERSIZE_DROP) {
                     noteKissMalformedFrame(true);
@@ -654,6 +800,7 @@ static void serialRxTask(void*) {
                 if (kissFrame.command != KISS_DATA_FRAME) {
                     continue;
                 }
+                noteSerialRxFrameDecoded();
                 if (modemConfig.transportMode == TransportMode::GENERIC_FRAGMENTED) {
                     SerialIntegrityHeader hdr;
                     if (!parseSerialIntegrityHeader(kissFrame.data, kissFrame.len, hdr) ||
@@ -679,16 +826,17 @@ static void serialRxTask(void*) {
                 }
                 Serial.printf("\n");
 #endif
-                // Block indefinitely on queue to apply backpressure to USB CDC
-                if (uxQueueSpacesAvailable(txQueue) == 0) {
-                    auto& sm = StatsManager::instance();
-                    sm.lock();
-                    sm.get().txQueueWaitCount++;
-                    sm.unlock();
+                if (backlog_count == SERIAL_RX_BACKLOG_DEPTH) {
+                    noteSerialRxBacklogDrop();
+                    continue;
                 }
-                xQueueSend(txQueue, &frame, portMAX_DELAY);
-                mac::notifyTxWork();
-                updateStackHwm(&Stats::serialRxStackHwm, last_hwm_ms);
+                backlog[backlog_head] = frame;
+                backlog_head = static_cast<uint8_t>((backlog_head + 1u) % SERIAL_RX_BACKLOG_DEPTH);
+                backlog_count++;
+                noteSerialRxBacklogDepth(backlog_count);
+            }
+            if (bytes_read > 0) {
+                noteSerialRxBytes(static_cast<uint16_t>(avail), bytes_read);
             }
         } else {
             // No bytes available right now.
@@ -840,6 +988,8 @@ static void haltBoot(const char* what, int code) {
 // ── Arduino entry points ──────────────────────────────────────────────────────
 void setup() {
     serialWriteMutex = xSemaphoreCreateMutex();
+    const size_t serialRxBufferSize =
+        Serial.setRxBufferSize(SERIAL_RX_BUFFER_SIZE);
     const size_t serialTxBufferSize =
         Serial.setTxBufferSize(SERIAL_KISS_ENCODED_MAX);
     Serial.setTxTimeoutMs(SERIAL_TX_TIMEOUT_MS);
@@ -877,8 +1027,9 @@ void setup() {
     display.begin();
     BOOT_LOG_LN("[main] Display initialized successfully.");
     if (serialWriteMutex == nullptr ||
+        serialRxBufferSize < SERIAL_RX_BUFFER_SIZE ||
         serialTxBufferSize < SERIAL_KISS_ENCODED_MAX) {
-        haltBoot("USB TX Init Fail", -94);
+        haltBoot("USB CDC Init Fail", -94);
     }
 
 #if SERIAL_CONSOLE_LOGS
